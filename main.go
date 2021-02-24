@@ -15,10 +15,16 @@ type MessageChannel struct {
 
 func tickerUpdates(msgChannel chan coinbasepro.Message) {
   // Forever look for ticker updates
+  var lastSequence int64
+  var price string
   for {
     select {
     case msg := <-msgChannel:
-      log.Println(msg.Price)
+      if msg.Sequence > lastSequence {
+        lastSequence = msg.Sequence
+        price = msg.Price
+        log.Println(lastSequence, msg.BestAsk, price)
+      }
     }
   }
 }
@@ -35,12 +41,15 @@ func wsFeed(msgChannels []coinbasepro.MessageChannel) {
       }
       // Just see if the channel is in the map
       if _, ok := channels[msgChannel]; !ok {
-        // Create a new unbuffered channel 
-        channels[msgChannel] = make(chan coinbasepro.Message, 0)
+        // Create a new buffered channel. 
+        // We can hold up to 50 messages which is like a few seconds worth
+        // Probably will never reach this limit. This is good so we never miss messages
+        channels[msgChannel] = make(chan coinbasepro.Message, 50)
         // Figure out which function to spawn with corresponding channel
         switch channel.Name {
         case "ticker":
-          tickerUpdates(channels[msgChannel])
+          // Spawn a goroutine for ticker updates on a given coin
+          go tickerUpdates(channels[msgChannel])
         }
       }
     }
@@ -78,9 +87,9 @@ func wsFeed(msgChannels []coinbasepro.MessageChannel) {
       ProductId: msg.ProductID,
     }
     // Find the corresponding Go channel in the map to send the message to
-    // There should never be a case where the channel isn't already in the map
-    channel, _ := channels[msgChannel]
-    channel <- msg
+    if channel, ok := channels[msgChannel]; ok {
+      channel <- msg
+    }
   }
 }
 
