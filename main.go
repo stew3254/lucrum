@@ -133,30 +133,39 @@ func main() {
 
   client := coinbasepro.NewClient()
 
-  // Authenticate client configuration can be updated with ClientConfig
-  client.UpdateConfig(&coinbasepro.ClientConfig{
-    BaseURL: dotenv.GetString("COINBASE_PRO_URL"),
-    Key: dotenv.GetString("COINBASE_PRO_KEY"),
-    Passphrase: dotenv.GetString("COINBASE_PRO_PASSPHRASE"),
-    Secret: dotenv.GetString("COINBASE_PRO_SECRET"),
-  })
+  if dotenv.GetInt("COINBASE_PRO_SANDBOX") == 1 {
+    log.Println("RUNNING IN SANDBOX MODE")
+    // Authenticate client configuration can be updated with ClientConfig
+    client.UpdateConfig(&coinbasepro.ClientConfig{
+      BaseURL: dotenv.GetString("COINBASE_PRO_SANDBOX_URL"),
+      Key: dotenv.GetString("COINBASE_PRO_SANDBOX_KEY"),
+      Passphrase: dotenv.GetString("COINBASE_PRO_SANDBOX_PASSPHRASE"),
+      Secret: dotenv.GetString("COINBASE_PRO_SANDBOX_SECRET"),
+    })
+  } else {
+    // Authenticate client configuration can be updated with ClientConfig
+    client.UpdateConfig(&coinbasepro.ClientConfig{
+      BaseURL: dotenv.GetString("COINBASE_PRO_URL"),
+      Key: dotenv.GetString("COINBASE_PRO_KEY"),
+      Passphrase: dotenv.GetString("COINBASE_PRO_PASSPHRASE"),
+      Secret: dotenv.GetString("COINBASE_PRO_SECRET"),
+    })
+  }
 
-  // accounts, err := client.GetAccounts()
-  // if err != nil {
-  // 	log.Fatalln(err)
-  // }
-  wsFeed([]coinbasepro.MessageChannel{
-    {
-      Name: "status",
-      ProductIds: []string{
-        "BTC-USD",
-      },
-    },
-    // {
-    //   Name: "heartbeat",
-    //   ProductIds: []string{
-    //     "BTC-USD",
-    //   },
-    // },
-  })
+  accounts, err := client.GetAccounts()
+  if err != nil {
+  	log.Fatalln(err)
+  }
+  for _, account := range accounts {
+    log.Println(account.Currency, account.Balance)
+  }
+  
+  // wsFeed([]coinbasepro.MessageChannel{
+  //   {
+  //     Name: "status",
+  //     ProductIds: []string{
+  //       "BTC-USD",
+  //     },
+  //   },
+  // })
 }
