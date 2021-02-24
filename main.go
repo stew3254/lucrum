@@ -1,6 +1,7 @@
 package main
 
 import (
+  "encoding/json"
   ws "github.com/gorilla/websocket"
   "github.com/preichenberger/go-coinbasepro/v2"
   "github.com/profclems/go-dotenv"
@@ -13,20 +14,39 @@ type MessageChannel struct {
   ProductId string
 }
 
-func tickerUpdates(msgChannel chan coinbasepro.Message) {
+func handleWSMsg(msgChannel chan coinbasepro.Message, handler func(msg coinbasepro.Message)) {
   // Forever look for ticker updates
   var lastSequence int64
-  var price string
   for {
     select {
     case msg := <-msgChannel:
       if msg.Sequence > lastSequence {
-        lastSequence = msg.Sequence
-        price = msg.Price
-        log.Println(lastSequence, msg.BestAsk, price)
+        handler(msg)
       }
     }
   }
+}
+
+// Show data that comes from the ticker
+func handleTicker(msg coinbasepro.Message) {
+  log.Println(msg.Price)
+}
+
+// Handle status messages
+func handleStatus(msg coinbasepro.Message) {
+  out, err := json.Marshal(msg)
+  if err != nil {
+    log.Println(err)
+  }
+  log.Println(string(out))
+}
+
+func handleHeartbeat(msg coinbasepro.Message) {
+  out, err := json.Marshal(msg)
+  if err != nil {
+    log.Println(err)
+  }
+  log.Println(string(out))
 }
 
 func wsFeed(msgChannels []coinbasepro.MessageChannel) {
@@ -47,9 +67,15 @@ func wsFeed(msgChannels []coinbasepro.MessageChannel) {
         channels[msgChannel] = make(chan coinbasepro.Message, 50)
         // Figure out which function to spawn with corresponding channel
         switch channel.Name {
+        case "heartbeat":
+          // Spawn a goroutine for status updates on a given coin
+          go handleWSMsg(channels[msgChannel], handleHeartbeat)
+        case "status":
+          // Spawn a goroutine for status updates on a given coin
+          go handleWSMsg(channels[msgChannel], handleStatus)
         case "ticker":
           // Spawn a goroutine for ticker updates on a given coin
-          go tickerUpdates(channels[msgChannel])
+          go handleWSMsg(channels[msgChannel], handleTicker)
         }
       }
     }
@@ -57,7 +83,12 @@ func wsFeed(msgChannels []coinbasepro.MessageChannel) {
   
   // Create a websocket to coinbase
   var wsDialer ws.Dialer
-  wsConn, _, err := wsDialer.Dial("wss://ws-feed.pro.coinbase.com", nil)
+  wsConn, _, err := wsDialer.Dial(
+    dotenv.GetString("COINBASE_PRO_WS_SANDBOX"),
+   nil,
+  )
+  
+  // If the websocket fails the bot can't function
   if err != nil {
     log.Fatalln(err)
   }
@@ -102,12 +133,12 @@ func main() {
 
   client := coinbasepro.NewClient()
 
-  // optional, configuration can be updated with ClientConfig
+  // Authenticate client configuration can be updated with ClientConfig
   client.UpdateConfig(&coinbasepro.ClientConfig{
-    BaseURL: "https://api.pro.coinbase.com",
-    Key: dotenv.GetString("API_KEY"),
-    Passphrase: dotenv.GetString("API_PASSPHRASE"),
-    Secret: dotenv.GetString("API_SECRET"),
+    BaseURL: dotenv.GetString("COINBASE_PRO_URL"),
+    Key: dotenv.GetString("COINBASE_PRO_KEY"),
+    Passphrase: dotenv.GetString("COINBASE_PRO_PASSPHRASE"),
+    Secret: dotenv.GetString("COINBASE_PRO_SECRET"),
   })
 
   // accounts, err := client.GetAccounts()
@@ -116,10 +147,16 @@ func main() {
   // }
   wsFeed([]coinbasepro.MessageChannel{
     {
-      Name: "ticker",
+      Name: "status",
       ProductIds: []string{
         "BTC-USD",
       },
     },
+    // {
+    //   Name: "heartbeat",
+    //   ProductIds: []string{
+    //     "BTC-USD",
+    //   },
+    // },
   })
 }
