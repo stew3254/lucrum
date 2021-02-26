@@ -10,7 +10,7 @@ type MarketData struct {
 	Open        float32          `gorm:"type:real"`
 	Close       float32          `gorm:"type:real"`
 	Volume      int32            `gorm:"type:int"`
-	Granularity int32            `gorm:"type:int"`
+	Granularity int32            `gorm:"type:int2"`
 }
 
 type OrderBook struct {

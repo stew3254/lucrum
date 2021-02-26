@@ -7,12 +7,6 @@ import (
 	"log"
 )
 
-// Used so we can hash it
-type MessageChannel struct {
-	Name      string
-	ProductId string
-}
-
 func WSMessageHandler(msgChannel chan coinbasepro.Message, handler func(msg coinbasepro.Message)) {
 	// Forever look for ticker updates
 	var lastSequence int64
@@ -28,32 +22,22 @@ func WSMessageHandler(msgChannel chan coinbasepro.Message, handler func(msg coin
 
 func WSDispatcher(msgChannels []coinbasepro.MessageChannel) {
 	// First filter our duplicate msgChannels
-	channels := make(map[MessageChannel]chan coinbasepro.Message, len(msgChannels))
+	channels := make(map[string]chan coinbasepro.Message, len(msgChannels))
 	for _, channel := range msgChannels {
-		// Create a new MessageChannel for a single product
-		for _, id := range channel.ProductIds {
-			msgChannel := MessageChannel{
-				Name:      channel.Name,
-				ProductId: id,
-			}
-			// Just see if the channel is in the map
-			if _, ok := channels[msgChannel]; !ok {
-				// Create a new buffered channel.
-				// We can hold up to 50 messages which is like a few seconds worth
-				// Probably will never reach this limit. This is good so we never miss messages
-				channels[msgChannel] = make(chan coinbasepro.Message, 50)
-				// Figure out which function to spawn with corresponding channel
-				switch channel.Name {
-				case "heartbeat":
-					// Spawn a goroutine for status updates on a given coin
-					go WSMessageHandler(channels[msgChannel], HandleHeartbeat)
-				case "status":
-					// Spawn a goroutine for status updates on a given coin
-					go WSMessageHandler(channels[msgChannel], HandleStatus)
-				case "ticker":
-					// Spawn a goroutine for ticker updates on a given coin
-					go WSMessageHandler(channels[msgChannel], HandleTicker)
-				}
+		// Just see if the channel is in the map
+		if _, ok := channels[channel.Name]; !ok {
+			// Create a new buffered channel.
+			// We can hold up to 50 messages which is like a few seconds worth
+			// Probably will never reach this limit. This is good so we never miss messages
+			channels[channel.Name] = make(chan coinbasepro.Message, 50)
+			// Figure out which function to spawn with corresponding channel
+			switch channel.Name {
+			case "heartbeat":
+				go WSMessageHandler(channels[channel.Name], HandleHeartbeat)
+			case "status":
+				go WSMessageHandler(channels[channel.Name], HandleStatus)
+			case "ticker":
+				go WSMessageHandler(channels[channel.Name], HandleTicker)
 			}
 		}
 	}
@@ -89,13 +73,8 @@ func WSDispatcher(msgChannels []coinbasepro.MessageChannel) {
 			log.Println(err)
 			break
 		}
-		// Construct a message channel out of the message
-		msgChannel := MessageChannel{
-			Name:      msg.Type,
-			ProductId: msg.ProductID,
-		}
 		// Find the corresponding Go channel in the map to send the message to
-		if channel, ok := channels[msgChannel]; ok {
+		if channel, ok := channels[msg.Type]; ok {
 			channel <- msg
 		}
 	}
