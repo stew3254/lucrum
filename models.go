@@ -13,6 +13,9 @@ type MarketData struct {
 	Granularity int32            `gorm:"type:int2"`
 }
 
+// Create this typedef to distinguish data the bot collects live vs past data
+type HistoricalData MarketData
+
 type OrderBook struct {
 	Id             string           `gorm:"primaryKey; type:text"`
 	Price          float32          `gorm:"type:real"`
