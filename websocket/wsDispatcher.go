@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"context"
 	ws "github.com/gorilla/websocket"
 	"github.com/preichenberger/go-coinbasepro/v2"
 	"github.com/profclems/go-dotenv"
@@ -8,7 +9,7 @@ import (
 )
 
 func WSMessageHandler(msgChannel chan coinbasepro.Message, handler func(msg coinbasepro.Message)) {
-	// Forever look for ticker updates
+	// Forever look for updates
 	var lastSequence int64
 	for {
 		select {
@@ -20,7 +21,7 @@ func WSMessageHandler(msgChannel chan coinbasepro.Message, handler func(msg coin
 	}
 }
 
-func WSDispatcher(msgChannels []coinbasepro.MessageChannel) {
+func WSDispatcher(ctx context.Context, msgChannels []coinbasepro.MessageChannel) {
 	// First filter our duplicate msgChannels
 	channels := make(map[string]chan coinbasepro.Message, len(msgChannels))
 	for _, channel := range msgChannels {
@@ -62,20 +63,54 @@ func WSDispatcher(msgChannels []coinbasepro.MessageChannel) {
 
 	// Write our subscription message
 	if err := wsConn.WriteJSON(subscribe); err != nil {
-		log.Println(err)
+		log.Fatalln(err)
 	}
 
+	// Create a channel to send the messages over
+	msgChan := make(chan coinbasepro.Message, 10)
+	// Create a channel to receive an error over
+	errChan := make(chan error, 1)
+
 	// Read messages out of the websocket
+	readMessages := func(msgChan chan coinbasepro.Message, errChan chan error) {
+		for {
+			// Get the message
+			msg := coinbasepro.Message{}
+			if err := wsConn.ReadJSON(&msg); err != nil {
+				log.Println(err)
+				// Send the error back
+				errChan <- err
+				return
+			}
+
+			// Send the message
+			msgChan <- msg
+		}
+	}
+	
+	// Start the message reader
+	go readMessages(msgChan, errChan)
+
+	// Constantly wait for messages
 	// Then send them to appropriate msgChannels to handle them
 	for true {
-		msg := coinbasepro.Message{}
-		if err := wsConn.ReadJSON(&msg); err != nil {
+		select {
+		// We received a message
+		case msg := <-msgChan:
+			// Find the corresponding Go channel in the map to send the message to
+			if channel, ok := channels[msg.Type]; ok {
+				channel <- msg
+			}
+		// Something bad happened and it's time to die
+		case err := <-errChan:
 			log.Println(err)
-			break
-		}
-		// Find the corresponding Go channel in the map to send the message to
-		if channel, ok := channels[msg.Type]; ok {
-			channel <- msg
+			return
+		// We received an interrupt
+		case <-ctx.Done():
+			// Close the connection so the reader sending in the messages errors and dies
+			_ = wsConn.Close()
+			log.Println("Received an interrupt. Shutting down gracefully")
+			return
 		}
 	}
 }

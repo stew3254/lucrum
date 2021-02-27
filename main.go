@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"github.com/preichenberger/go-coinbasepro/v2"
 	"github.com/profclems/go-dotenv"
 	"github.com/sevlyar/go-daemon"
@@ -10,19 +11,26 @@ import (
 	"log"
 	"lucrum/websocket"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 )
 
 // DB is a global DB connection to be shared
 var DB *gorm.DB
 
-func daemonize(logFile string, pidFile string, helper func(*os.Process)) {
+func daemonize(
+	ctx context.Context,
+	logFile string,
+	pidFile string,
+	helper func(context.Context, *os.Process),
+) {
 	// Get workdir
 	cwd, err := os.Getwd()
 	Check(err)
 
 	// Create a new daemon context
-	ctx := daemon.Context{
+	daemonCtx := daemon.Context{
 		PidFileName: pidFile,
 		PidFilePerm: 0644,
 		LogFileName: logFile,
@@ -33,7 +41,7 @@ func daemonize(logFile string, pidFile string, helper func(*os.Process)) {
 	}
 
 	// See if this process already exists
-	proc, err := ctx.Search()
+	proc, err := daemonCtx.Search()
 	// Something bad happened we don't know
 	// This catches the file not existing and there not being a PID in the file
 	if !os.IsNotExist(err) && err != io.EOF && err != nil {
@@ -41,29 +49,29 @@ func daemonize(logFile string, pidFile string, helper func(*os.Process)) {
 	}
 	
 	// A process already exists so we don't need to daemonize
-	if proc != nil {
+	if err = proc.Signal(syscall.Signal(0)); err == nil {
 		log.Println("Daemon process already exists, skipping daemonizing")
 		return
 	}
 
 	// Daemonize
-	child, err := ctx.Reborn()
+	child, err := daemonCtx.Reborn()
 	Check(err)
 
 	// Run on daemonize
-	helper(child)
+	helper(ctx, child)
 
 	// Release the daemon
-	err = ctx.Release()
+	err = daemonCtx.Release()
 	Check(err)
 }
 
-func wsDaemonHelper(child *os.Process) {
+func wsDaemonHelper(ctx context.Context, child *os.Process) {
 	// This is the child
 	if child == nil {
 		// Call the dispatcher
 		// TODO make a config file to read this stuff from
-		websocket.WSDispatcher([]coinbasepro.MessageChannel{
+		websocket.WSDispatcher(ctx, []coinbasepro.MessageChannel{
 			{
 				Name: "ticker",
 				ProductIds: []string{
@@ -76,7 +84,18 @@ func wsDaemonHelper(child *os.Process) {
 }
 
 // Used to actually run the bot
-func run() {
+func run(ctx context.Context) {
+	// Handle signal interrupts
+	defer func() {
+		select {
+		case <-ctx.Done():
+			log.Println("Received an interrupt. Shutting down gracefully")
+		// There was no signal but the program is done anyways
+		default:
+			return
+		}
+	}()
+	
 	// Create the DB
 	DB = CreateDB(dotenv.GetString("DB_NAME"))
 
@@ -118,6 +137,7 @@ func run() {
 			Secret:     dotenv.GetString("COINBASE_PRO_SECRET"),
 		})
 	}
+	
 
 	// rateParams := coinbasepro.GetHistoricRatesParams{
 	// 	Start:       time.Date(2021, 1, 1, 0, 0, 0, 0, time.Local),
@@ -136,6 +156,11 @@ func run() {
 }
 
 func main() {
+	// Set up sig handler
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+
+	defer stop()
+
 	// Load in the dotenv config
 	err := dotenv.LoadConfig()
 	if err != nil {
@@ -153,7 +178,7 @@ func main() {
 	if dotenv.GetBool("DAEMONIZE_BOT") {
 		// First daemonize the websocket
 		log.Println("Daemonizing websocket dispatcher")
-		daemonize(wsLogFile, dotenv.GetString("WEBSOCKET_PID_FILE"), wsDaemonHelper)
+		daemonize(ctx, wsLogFile, dotenv.GetString("WEBSOCKET_PID_FILE"), wsDaemonHelper)
 
 		// Get logfile name
 		logFile := dotenv.GetString("LOG_FILE")
@@ -161,15 +186,15 @@ func main() {
 			logFile = "lucrum.log"
 		}
 
-		runner := func(child *os.Process) {
+		runner := func(ctx context.Context, child *os.Process) {
 			// Run the real program if it's the child
 			// If it's the parent we are done and can exit the program
 			if child == nil {
-				run()
+				run(ctx)
 			}
 		}
 		log.Println("Daemonizing lucrum")
-		daemonize(logFile, dotenv.GetString("PID_FILE"), runner)
+		daemonize(ctx, logFile, dotenv.GetString("PID_FILE"), runner)
 
 		// We don't want to call run() and will return here
 		return
@@ -177,8 +202,8 @@ func main() {
 		// Check if we should still daemonize the websocket
 	} else if dotenv.GetBool("DAEMONIZE_WEBSOCKET") {
 		log.Println("Daemonizing websocket dispatcher")
-		daemonize(wsLogFile, dotenv.GetString("WEBSOCKET_PID_FILE"), wsDaemonHelper)
+		daemonize(ctx, wsLogFile, dotenv.GetString("WEBSOCKET_PID_FILE"), wsDaemonHelper)
 	}
 	// Run the main part of the program
-	run()
+	run(ctx)
 }
