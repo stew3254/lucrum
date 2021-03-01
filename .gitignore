@@ -1,4 +1,7 @@
 .env
 .idea/
+config.toml
+pid/
 lucrum.db
+logs/
 *.log

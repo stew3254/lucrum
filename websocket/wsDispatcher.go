@@ -2,10 +2,11 @@ package websocket
 
 import (
 	"context"
+	"log"
+	"lucrum/config"
+
 	ws "github.com/gorilla/websocket"
 	"github.com/preichenberger/go-coinbasepro/v2"
-	"github.com/profclems/go-dotenv"
-	"log"
 )
 
 func WSMessageHandler(msgChannel chan coinbasepro.Message, handler func(msg coinbasepro.Message)) {
@@ -21,7 +22,7 @@ func WSMessageHandler(msgChannel chan coinbasepro.Message, handler func(msg coin
 	}
 }
 
-func WSDispatcher(ctx context.Context, msgChannels []coinbasepro.MessageChannel) {
+func WSDispatcher(ctx context.Context, conf config.Coinbase, msgChannels []coinbasepro.MessageChannel) {
 	// First filter our duplicate msgChannels
 	channels := make(map[string]chan coinbasepro.Message, len(msgChannels))
 	for _, channel := range msgChannels {
@@ -46,7 +47,7 @@ func WSDispatcher(ctx context.Context, msgChannels []coinbasepro.MessageChannel)
 	// Create a websocket to coinbase
 	var wsDialer ws.Dialer
 	wsConn, _, err := wsDialer.Dial(
-		dotenv.GetString("COINBASE_PRO_WS_SANDBOX"),
+		conf.WsURL,
 		nil,
 	)
 
@@ -87,7 +88,7 @@ func WSDispatcher(ctx context.Context, msgChannels []coinbasepro.MessageChannel)
 			msgChan <- msg
 		}
 	}
-	
+
 	// Start the message reader
 	go readMessages(msgChan, errChan)
 
@@ -107,9 +108,9 @@ func WSDispatcher(ctx context.Context, msgChannels []coinbasepro.MessageChannel)
 			return
 		// We received an interrupt
 		case <-ctx.Done():
+			log.Println("Received an interrupt. Shutting down gracefully")
 			// Close the connection so the reader sending in the messages errors and dies
 			_ = wsConn.Close()
-			log.Println("Received an interrupt. Shutting down gracefully")
 			return
 		}
 	}

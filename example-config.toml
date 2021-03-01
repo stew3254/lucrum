@@ -1,0 +1,51 @@
+[bot]
+# Determines whether the bot is in sandbox or live mode
+is_sandbox = true
+
+# Coinbase specification for the bot
+[bot.coinbase]
+url = "https://api.pro.coinbase.com"
+websocket_url = "wss://ws-feed.pro.coinbase.com"
+api_key = "key"
+api_secret = "secret"
+api_passphrase = "passphrase"
+
+# Coinbase Sandbox specification
+[bot.sandbox]
+url = "https://api-public.sandbox.pro.coinbase.com"
+websocket_url = "wss://ws-feed-public.sandbox.pro.coinbase.com"
+api_key = "key"
+api_secret = "secret"
+api_passphrase = "passphrase"
+
+# Determines if the bot should be daemonized
+[daemon]
+daemonize = false
+pid_file = "pid/lucrum.pid"
+pid_file_perms = "0644"
+log_file = "logs/lucrum.log"
+log_file_perms = "0644"
+
+# Determines if the websocket portion should be daemonized
+# NOTE: If the bot is daemonized this will be daemonized too
+[websocket_daemon]
+daemonize = false
+pid_file = "pid/websocket.pid"
+pid_file_perms = "0644"
+log_file = "logs/websocket.log"
+log_file_perms = "0644"
+
+# Database information
+[database]
+type = "sqlite"
+name = "lucrum.db"
+host = ""
+port = 0
+user = ""
+passphrase = ""
+
+# Redis information
+[redis]
+name = 0
+host = "localhost"
+port = 6379
