@@ -1,16 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"log"
 	"lucrum/config"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
-
-	"github.com/sevlyar/go-daemon"
 
 	"github.com/preichenberger/go-coinbasepro/v2"
 	"gorm.io/gorm"
@@ -18,33 +14,6 @@ import (
 
 // DB is a global DB connection to be shared
 var DB *gorm.DB
-
-func alertUser() (err error) {
-	if daemon.WasReborn() {
-		return nil
-	}
-
-	// Alert user they are not in a sandbox
-	log.Println("YOU ARE NOT IN A SANDBOX! ARE YOU SURE YOU WANT TO CONTINUE? (Y/n)")
-
-	// Try to read stdin
-	reader := bufio.NewReader(os.Stdin)
-	text, err := reader.ReadString('\n')
-
-	// Return the error
-	if err != nil {
-		return
-	}
-
-	// Get user input
-	text = strings.Trim(strings.ToLower(text), "\n")
-	if text != "y" && text != "yes" {
-		log.Println("Okay, shutting down")
-		log.Println("To run in sandbox mode, set 'is_sandbox = true' in the .env file")
-		os.Exit(0)
-	}
-	return
-}
 
 // Used to actually run the bot
 func run(ctx context.Context, conf config.Config) {
@@ -77,7 +46,7 @@ func run(ctx context.Context, conf config.Config) {
 		})
 	} else {
 		// Alert the user they are not in a sandbox
-		err := alertUser()
+		err := AlertUser()
 		// If this errors we probably are daemonized and already asked for input
 		if err != nil {
 			log.Fatalln(err)
@@ -92,20 +61,19 @@ func run(ctx context.Context, conf config.Config) {
 		})
 	}
 
-	// rateParams := coinbasepro.GetHistoricRatesParams{
-	// 	Start:       time.Date(2021, 1, 1, 0, 0, 0, 0, time.Local),
-	// 	End:         time.Now(),
-	// 	Granularity: 86400,
-	// }
-	// rates, err := client.GetHistoricRates("BTC-USD", rateParams)
-	// Check(err)
-	// log.Println(rates)
-	products, err := client.GetProducts()
-	Check(err)
-	for _, product := range products {
-		log.Println(product.ID)
+	if len(config.CLI.HistoricRates) > 0 {
+		for _, file := range config.CLI.HistoricRates {
+			products, params, err := ReadRateFile(file)
+			Check(err)
+			for i, param := range params {
+				rates, err := GetHistoricRates(client, products[i], param)
+				if err != nil {
+					log.Println(err)
+				}
+				log.Println(rates)
+			}
+		}
 	}
-	log.Println(len(products))
 }
 
 func main() {
@@ -117,13 +85,12 @@ func main() {
 	conf, err := config.Parse("config.toml")
 	Check(err)
 
+	// Run command line parsing
+	config.ArgParse()
+
 	// See if we need to daemonize
 	// Note we don't care to use the websocket if it's not as a daemon (for now)
 	if conf.Daemon.Daemonize {
-		// First daemonize the websocket
-		// log.Println("Daemonizing websocket dispatcher")
-		daemonize(ctx, conf.WsDaemon, conf.Bot.Coinbase, wsDaemonHelper)
-
 		runner := func(ctx context.Context, coinbaseConf config.Coinbase, child *os.Process) {
 			// Run the real program if it's the child
 			// If it's the parent we are done and can exit the program
@@ -131,13 +98,14 @@ func main() {
 				run(ctx, conf)
 			}
 		}
+
 		// log.Println("Daemonizing lucrum")
 		// Determine if we're sandboxed or not
 		if conf.Bot.IsSandbox {
 			daemonize(ctx, conf.Daemon, conf.Bot.Coinbase, runner)
 		} else {
 			// Alert the user they are not in a sandbox
-			err = alertUser()
+			err = AlertUser()
 			// This shouldn't have an error
 			if err != nil {
 				log.Fatalln(err)
@@ -148,8 +116,9 @@ func main() {
 		// We don't want to call run() and will return here
 		return
 
-		// Check if we should still daemonize the websocket
-	} else if conf.WsDaemon.Daemonize {
+	}
+	// Check if we should daemonize the websocket
+	if conf.WsDaemon.Daemonize {
 		log.Println("Daemonizing websocket dispatcher")
 		daemonize(ctx, conf.WsDaemon, conf.Bot.Coinbase, wsDaemonHelper)
 	}
