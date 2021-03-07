@@ -8,8 +8,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"gorm.io/gorm/clause"
 
 	"lucrum/ratelimit"
 
@@ -35,47 +36,30 @@ func (p HistoricRateParams) toParams() coinbasepro.GetHistoricRatesParams {
 	}
 }
 
-func getRates(
-	client *coinbasepro.Client,
-	limiter ratelimit.Limiter,
-	jobChan <-chan HistoricRateParams,
-	rateChan chan<- []coinbasepro.HistoricRate,
-	wg *sync.WaitGroup,
-) {
-	for {
-		select {
-		// Listen for new jobs
-		case params := <-jobChan:
-			// Lock on the critical section
-			// This way we don't make too many web requests at once
-			limiter.Lock()
-			// Get the rates
-			rates, err := client.GetHistoricRates(params.Product, params.toParams())
-			limiter.Unlock()
-			// Is it fails we die and return
-			if err != nil {
-				wg.Done()
-				return
-			}
-			// Send back the rates
-			rateChan <- rates
-		// Channel is closed and we are done
-		default:
-			wg.Done()
-			return
-		}
+// Converts to a HistoricalData type
+func convertRates(rate coinbasepro.HistoricRate, params HistoricRateParams) (data HistoricalData) {
+	return HistoricalData{
+		Time:        rate.Time,
+		Coin:        params.Product,
+		High:        rate.High,
+		Low:         rate.Low,
+		Open:        rate.Open,
+		Close:       rate.Close,
+		Volume:      rate.Volume,
+		Granularity: params.Granularity,
 	}
 }
+
 func GetHistoricRatesGranularities() []int {
 	return []int{60, 300, 900, 3600, 21600, 86400}
 }
 
-// GetHistoricRates grabs the data for a coin
-func GetHistoricRates(
+// SaveHistoricalRates grabs the data for a coin
+func SaveHistoricalRates(
 	client *coinbasepro.Client,
-	limiter ratelimit.Limiter,
+	rl *ratelimit.RateLimiter,
 	params HistoricRateParams,
-) (rates []coinbasepro.HistoricRate, err error) {
+) (err error) {
 	// Check if granularity is valid or not
 	validGranularity := false
 	for _, granularity := range GetHistoricRatesGranularities() {
@@ -87,51 +71,81 @@ func GetHistoricRates(
 
 	// Complain if we don't have a good granularity
 	if !validGranularity {
-		return nil, errors.New("invalid granularity provided")
-	}
-
-	wg := sync.WaitGroup{}
-	jobChan := make(chan HistoricRateParams, 5)
-	ratesChan := make(chan []coinbasepro.HistoricRate, 5)
-
-	// Spin off some workers
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go getRates(client, limiter, jobChan, ratesChan, &wg)
+		return errors.New("invalid granularity provided")
 	}
 
 	// Get the next 300 requests
 	nextTime := params.Start.Add(time.Duration(params.Granularity) * time.Second * MaxHistoricRates)
 	tempTime := params.Start
+	getRates := func(param HistoricRateParams) error {
+		// Be brief on the critical section (although in 1 thread right now this doesn't matter)
+		rl.Lock()
+		// Get the historic rates
+		r, err := client.GetHistoricRates(param.Product, param.toParams())
+		rl.Unlock()
+		// Check to see if we are being rate limited
+		for err != nil && err.Error() == "Public rate limit exceeded" {
+			// Bump up the limit
+			rl.Increase()
+			// Be brief on the critical section (although in 1 thread right now this doesn't matter)
+			rl.Lock()
+			// Get the historic rates
+			r, err = client.GetHistoricRates(param.Product, param.toParams())
+			rl.Unlock()
+		}
+		// This is a bad error
+		if err != nil {
+			return err
+		} else {
+			// We didn't get rate limited so we can slowly decrease the rate limit
+			rl.Decrease()
+		}
+
+		rates := make([]HistoricalData, 0, len(r))
+		// Append the rates
+		for _, rate := range r {
+			rates = append(rates, convertRates(rate, params))
+		}
+		// Write out to the DB
+		DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&rates)
+
+		// Move forward the times
+		tempTime = nextTime.Add(time.Duration(params.Granularity) * time.Second)
+		nextTime = tempTime.Add(time.Duration(params.Granularity) * time.Second * MaxHistoricRates)
+
+		return nil
+	}
+
+	log.Printf(
+		"Getting historical rates for %s from %s to %s",
+		params.Product,
+		params.Start,
+		params.End,
+	)
+
+	// Loop through all of the requests to get them
 	for nextTime.Before(params.End) {
 		// Send the job channel the new params to get
-		jobChan <- HistoricRateParams{
+		param := HistoricRateParams{
 			Product:     params.Product,
 			Start:       tempTime,
 			End:         nextTime,
 			Granularity: params.Granularity,
 		}
-		// Move forward the times
-		tempTime = nextTime
-		nextTime = nextTime.Add(time.Duration(params.Granularity) * time.Second * MaxHistoricRates)
+		err = getRates(param)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Make the last request
-	// Send the job channel the new params to get
-	jobChan <- HistoricRateParams{
+	param := HistoricRateParams{
 		Product:     params.Product,
 		Start:       tempTime,
 		End:         params.End,
 		Granularity: params.Granularity,
 	}
-	// Close the channel to signal to the goroutines we are done
-
-	for {
-		select {
-		case r := <-ratesChan:
-			rates = append(rates, r...)
-		}
-	}
+	return getRates(param)
 }
 
 // ReadRateFile reads in a specific CSV file format to get historical data

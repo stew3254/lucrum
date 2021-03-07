@@ -70,17 +70,16 @@ func run(ctx context.Context, conf config.Config) {
 			log.Println(params)
 			// Create a RateLimiter to not overwhelm the API
 			rateLimiter := ratelimit.NewRateLimiter(
-				1,
-				5,
+				10,
+				10,
 				100*time.Millisecond,
 				time.Second,
 			)
 			for _, param := range params {
-				rates, err := GetHistoricRates(client, rateLimiter, param)
+				err = SaveHistoricalRates(client, rateLimiter, param)
 				if err != nil {
 					log.Println(err)
 				}
-				log.Println(rates)
 			}
 		}
 	}
