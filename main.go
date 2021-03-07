@@ -4,9 +4,11 @@ import (
 	"context"
 	"log"
 	"lucrum/config"
+	"lucrum/ratelimit"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/preichenberger/go-coinbasepro/v2"
 	"gorm.io/gorm"
@@ -63,10 +65,18 @@ func run(ctx context.Context, conf config.Config) {
 
 	if len(config.CLI.HistoricRates) > 0 {
 		for _, file := range config.CLI.HistoricRates {
-			products, params, err := ReadRateFile(file)
+			params, err := ReadRateFile(file)
 			Check(err)
-			for i, param := range params {
-				rates, err := GetHistoricRates(client, products[i], param)
+			log.Println(params)
+			// Create a RateLimiter to not overwhelm the API
+			rateLimiter := ratelimit.NewRateLimiter(
+				1,
+				5,
+				100*time.Millisecond,
+				time.Second,
+			)
+			for _, param := range params {
+				rates, err := GetHistoricRates(client, rateLimiter, param)
 				if err != nil {
 					log.Println(err)
 				}

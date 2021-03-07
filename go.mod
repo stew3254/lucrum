@@ -9,6 +9,7 @@ require (
 	github.com/pelletier/go-toml v1.8.1
 	github.com/preichenberger/go-coinbasepro/v2 v2.0.5
 	github.com/sevlyar/go-daemon v0.1.5
+	github.com/stew3254/ratelimit v0.0.0-20210306022231-f508ad5f3433
 	golang.org/x/sys v0.0.0-20210112080510-489259a85091 // indirect
 	gorm.io/driver/sqlite v1.1.4
 	gorm.io/gorm v1.20.12

@@ -8,13 +8,64 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"lucrum/ratelimit"
 
 	"github.com/preichenberger/go-coinbasepro/v2"
 )
 
-const MaxHistoricRates int = 300
+// Max amount of rates you are allowed to request at a time
+const MaxHistoricRates time.Duration = 300
 
+// Helper to keep data neat
+type HistoricRateParams struct {
+	Product     string
+	Start       time.Time
+	End         time.Time
+	Granularity int
+}
+
+func (p HistoricRateParams) toParams() coinbasepro.GetHistoricRatesParams {
+	return coinbasepro.GetHistoricRatesParams{
+		Start:       p.Start,
+		End:         p.End,
+		Granularity: p.Granularity,
+	}
+}
+
+func getRates(
+	client *coinbasepro.Client,
+	limiter ratelimit.Limiter,
+	jobChan <-chan HistoricRateParams,
+	rateChan chan<- []coinbasepro.HistoricRate,
+	wg *sync.WaitGroup,
+) {
+	for {
+		select {
+		// Listen for new jobs
+		case params := <-jobChan:
+			// Lock on the critical section
+			// This way we don't make too many web requests at once
+			limiter.Lock()
+			// Get the rates
+			rates, err := client.GetHistoricRates(params.Product, params.toParams())
+			limiter.Unlock()
+			// Is it fails we die and return
+			if err != nil {
+				wg.Done()
+				return
+			}
+			// Send back the rates
+			rateChan <- rates
+		// Channel is closed and we are done
+		default:
+			wg.Done()
+			return
+		}
+	}
+}
 func GetHistoricRatesGranularities() []int {
 	return []int{60, 300, 900, 3600, 21600, 86400}
 }
@@ -22,8 +73,8 @@ func GetHistoricRatesGranularities() []int {
 // GetHistoricRates grabs the data for a coin
 func GetHistoricRates(
 	client *coinbasepro.Client,
-	product string,
-	params coinbasepro.GetHistoricRatesParams,
+	limiter ratelimit.Limiter,
+	params HistoricRateParams,
 ) (rates []coinbasepro.HistoricRate, err error) {
 	// Check if granularity is valid or not
 	validGranularity := false
@@ -39,14 +90,48 @@ func GetHistoricRates(
 		return nil, errors.New("invalid granularity provided")
 	}
 
-	log.Println(params.Start.Add(time.Duration(params.Granularity) * time.Second))
-	log.Println(time.Duration(params.Granularity) * time.Second)
-	rates, err = client.GetHistoricRates(product, params)
-	if err != nil {
-		return
+	wg := sync.WaitGroup{}
+	jobChan := make(chan HistoricRateParams, 5)
+	ratesChan := make(chan []coinbasepro.HistoricRate, 5)
+
+	// Spin off some workers
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go getRates(client, limiter, jobChan, ratesChan, &wg)
 	}
 
-	return
+	// Get the next 300 requests
+	nextTime := params.Start.Add(time.Duration(params.Granularity) * time.Second * MaxHistoricRates)
+	tempTime := params.Start
+	for nextTime.Before(params.End) {
+		// Send the job channel the new params to get
+		jobChan <- HistoricRateParams{
+			Product:     params.Product,
+			Start:       tempTime,
+			End:         nextTime,
+			Granularity: params.Granularity,
+		}
+		// Move forward the times
+		tempTime = nextTime
+		nextTime = nextTime.Add(time.Duration(params.Granularity) * time.Second * MaxHistoricRates)
+	}
+
+	// Make the last request
+	// Send the job channel the new params to get
+	jobChan <- HistoricRateParams{
+		Product:     params.Product,
+		Start:       tempTime,
+		End:         params.End,
+		Granularity: params.Granularity,
+	}
+	// Close the channel to signal to the goroutines we are done
+
+	for {
+		select {
+		case r := <-ratesChan:
+			rates = append(rates, r...)
+		}
+	}
 }
 
 // ReadRateFile reads in a specific CSV file format to get historical data
@@ -54,14 +139,13 @@ func GetHistoricRates(
 // The coin must be of format COIN/CURRENCY
 // The times must be in the format of RFC3339
 // End time is allowed to be "now" in order to get time.Now()
-func ReadRateFile(fileName string) ([]string, []coinbasepro.GetHistoricRatesParams, error) {
-	var products []string
-	var params []coinbasepro.GetHistoricRatesParams
+func ReadRateFile(fileName string) ([]HistoricRateParams, error) {
+	var params []HistoricRateParams
 
 	// Open the file
 	file, err := os.Open(fileName)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	reader := csv.NewReader(file)
 
@@ -69,7 +153,7 @@ func ReadRateFile(fileName string) ([]string, []coinbasepro.GetHistoricRatesPara
 	// Header order is "Product,Start,End,Granularity"
 	_, err = reader.Read()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// Read in the rest of the file
@@ -110,13 +194,11 @@ func ReadRateFile(fileName string) ([]string, []coinbasepro.GetHistoricRatesPara
 			continue
 		}
 
-		// Add the product
-		products = append(products, record[0])
-
 		// Build our array to return
 		params = append(
 			params,
-			coinbasepro.GetHistoricRatesParams{
+			HistoricRateParams{
+				Product:     record[0],
 				Start:       start,
 				End:         end,
 				Granularity: granularity,
@@ -124,5 +206,5 @@ func ReadRateFile(fileName string) ([]string, []coinbasepro.GetHistoricRatesPara
 		)
 	}
 
-	return products, params, nil
+	return params, nil
 }
