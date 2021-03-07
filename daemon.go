@@ -17,9 +17,9 @@ import (
 
 func daemonize(
 	ctx context.Context,
+	config config.Config,
 	daemonConf config.Daemon,
-	helperConf config.Coinbase,
-	helper func(context.Context, config.Coinbase, *os.Process),
+	helper func(context.Context, config.Config, *os.Process),
 ) {
 
 	// Creat pid file path
@@ -77,14 +77,14 @@ func daemonize(
 	Check(err)
 
 	// Run on daemonize
-	helper(ctx, helperConf, child)
+	helper(ctx, config, child)
 
 	// Release the daemon
 	err = daemonCtx.Release()
 	Check(err)
 }
 
-func wsDaemonHelper(ctx context.Context, conf config.Coinbase, child *os.Process) {
+func wsDaemonHelper(ctx context.Context, conf config.Config, child *os.Process) {
 	// This is the child
 	if child == nil {
 		// Call the dispatcher

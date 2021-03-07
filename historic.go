@@ -95,6 +95,7 @@ func SaveHistoricalRates(
 		}
 		// This is a bad error
 		if err != nil {
+			log.Println(err, params.Product)
 			return err
 		} else {
 			// We didn't get rate limited so we can slowly decrease the rate limit
@@ -107,7 +108,10 @@ func SaveHistoricalRates(
 			rates = append(rates, convertRates(rate, params))
 		}
 		// Write out to the DB
-		DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&rates)
+		DB.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "time"}},
+			DoNothing: true,
+		}).Create(&rates)
 
 		// Move forward the times
 		tempTime = nextTime.Add(time.Duration(params.Granularity) * time.Second)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"lucrum/config"
+	"os"
 
 	ws "github.com/gorilla/websocket"
 	"github.com/preichenberger/go-coinbasepro/v2"
@@ -22,7 +23,7 @@ func WSMessageHandler(msgChannel chan coinbasepro.Message, handler func(msg coin
 	}
 }
 
-func WSDispatcher(ctx context.Context, conf config.Coinbase, msgChannels []coinbasepro.MessageChannel) {
+func WSDispatcher(ctx context.Context, conf config.Config, msgChannels []coinbasepro.MessageChannel) {
 	// First filter our duplicate msgChannels
 	channels := make(map[string]chan coinbasepro.Message, len(msgChannels))
 	for _, channel := range msgChannels {
@@ -46,10 +47,19 @@ func WSDispatcher(ctx context.Context, conf config.Coinbase, msgChannels []coinb
 
 	// Create a websocket to coinbase
 	var wsDialer ws.Dialer
-	wsConn, _, err := wsDialer.Dial(
-		conf.WsURL,
-		nil,
-	)
+	var wsConn *ws.Conn
+	var err error
+	if conf.Bot.IsSandbox {
+		wsConn, _, err = wsDialer.Dial(
+			conf.Bot.Sandbox.WsURL,
+			nil,
+		)
+	} else {
+		wsConn, _, err = wsDialer.Dial(
+			conf.Bot.Coinbase.WsURL,
+			nil,
+		)
+	}
 
 	// If the websocket fails the bot can't function
 	if err != nil {
@@ -105,13 +115,21 @@ func WSDispatcher(ctx context.Context, conf config.Coinbase, msgChannels []coinb
 		// Something bad happened and it's time to die
 		case err := <-errChan:
 			log.Println(err)
-			return
+			goto CleanUp
 		// We received an interrupt
 		case <-ctx.Done():
 			log.Println("Received an interrupt. Shutting down gracefully")
 			// Close the connection so the reader sending in the messages errors and dies
 			_ = wsConn.Close()
-			return
+			goto CleanUp
+		}
+	}
+CleanUp:
+	// Try to remove the PID file
+	if conf.WsDaemon.Daemonize {
+		err := os.Remove(conf.WsDaemon.PidFile)
+		if err != nil {
+			log.Println(err)
 		}
 	}
 }
