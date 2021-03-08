@@ -2,7 +2,7 @@
 .idea/
 config.toml
 pid/
-lucrum.db
+*.db
 logs/
 *.log
 
