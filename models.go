@@ -5,19 +5,35 @@ import (
 )
 
 type MarketData struct {
+	Id           int64     `gorm:"primaryKey; type:bigserial"`
+	Time         time.Time `gorm:"type:timestamp"`
+	Coin         string    `gorm:"type:varchar(16)"`
+	High         string    `gorm:"type:money"`
+	Low          string    `gorm:"type:money"`
+	Open         string    `gorm:"type:money"`
+	Close        string    `gorm:"type:money"`
+	Volume       float64   `gorm:"type:float8"`
+	BuyOrders    int
+	SellOrders   int
+	FilledOrders int
+	HighAmount   string
+	LowAmount    string
+	AvgAmount    string
+	VarAmount    string
+	Granularity  int `gorm:"type:int"`
+}
+
+type HistoricalData struct {
 	Id          int64     `gorm:"primaryKey; type:bigserial"`
 	Time        time.Time `gorm:"type:timestamp"`
 	Coin        string    `gorm:"type:varchar(16)"`
-	High        float64   `gorm:"type:money"`
-	Low         float64   `gorm:"type:money"`
-	Open        float64   `gorm:"type:money"`
-	Close       float64   `gorm:"type:money"`
-	Volume      float64   `gorm:"type:float8"`
+	High        string    `gorm:"type:money"`
+	Low         string    `gorm:"type:money"`
+	Open        string    `gorm:"type:money"`
+	Close       string    `gorm:"type:money"`
+	Volume      string    `gorm:"type:float8"`
 	Granularity int       `gorm:"type:int"`
 }
-
-// Create this typedef to distinguish data the bot collects live vs past data
-type HistoricalData MarketData
 
 type OrderBook struct {
 	Id             string    `gorm:"primaryKey; type:varchar(128)"`
