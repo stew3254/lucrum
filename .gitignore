@@ -5,3 +5,5 @@ pid/
 lucrum.db
 logs/
 *.log
+
+lucrum

@@ -35,6 +35,8 @@ type Database struct {
 	Port       int16  `toml:"port"`
 	User       string `toml:"user"`
 	Passphrase string `toml:"passphrase"`
+	Attempts   int    `toml:"attempts"`
+	Wait       int    `toml:"connection_wait"`
 }
 
 type Redis struct {

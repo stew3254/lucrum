@@ -10,9 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"gorm.io/gorm/clause"
-
-	"lucrum/ratelimit"
+	"github.com/stew3254/ratelimit"
 
 	"github.com/preichenberger/go-coinbasepro/v2"
 )
@@ -108,10 +106,7 @@ func SaveHistoricalRates(
 			rates = append(rates, convertRates(rate, params))
 		}
 		// Write out to the DB
-		DB.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "time"}},
-			DoNothing: true,
-		}).Create(&rates)
+		DB.Create(&rates)
 
 		// Move forward the times
 		tempTime = nextTime.Add(time.Duration(params.Granularity) * time.Second)

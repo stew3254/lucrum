@@ -43,6 +43,10 @@ host = ""
 port = 0
 user = ""
 passphrase = ""
+# How many attempts to make before giving up
+attempts = 5
+# How long to wait between requests in seconds
+connection_wait = 5
 
 # Redis information
 [redis]

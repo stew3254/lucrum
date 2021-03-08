@@ -2,17 +2,15 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"lucrum/config"
-	"lucrum/ratelimit"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/preichenberger/go-coinbasepro/v2"
+	"github.com/stew3254/ratelimit"
 	"gorm.io/gorm"
 )
 
@@ -39,7 +37,7 @@ func run(ctx context.Context, conf config.Config) {
 	}()
 
 	// Create the DB
-	DB = CreateDB(conf.DB.Name)
+	DB = ConnectDB(conf.DB)
 
 	// Get our coinbase client
 	client := coinbasepro.NewClient()
@@ -97,15 +95,13 @@ func run(ctx context.Context, conf config.Config) {
 
 		return
 	}
-
-	products, err := client.GetProducts()
+	rates, err := client.GetHistoricRates("ETH-USD", coinbasepro.GetHistoricRatesParams{
+		Start:       time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC),
+		End:         time.Date(2021, 1, 1, 0, 1, 0, 0, time.UTC),
+		Granularity: 60,
+	})
 	Check(err)
-	for _, product := range products {
-		if strings.HasSuffix(product.ID, "USD") {
-			fmt.Println(product.ID)
-		}
-	}
-	log.Println(len(products))
+	log.Println(rates)
 }
 
 func main() {
@@ -125,6 +121,14 @@ func main() {
 		conf.Bot.IsSandbox = true
 	} else if config.CLI.UnSandbox {
 		conf.Bot.IsSandbox = false
+	}
+
+	// Override daemon configurations
+	if config.CLI.Background {
+		conf.Daemon.Daemonize = true
+	}
+	if config.CLI.BackgroundWS {
+		conf.WsDaemon.Daemonize = true
 	}
 
 	// See if we need to daemonize

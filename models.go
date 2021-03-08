@@ -5,34 +5,35 @@ import (
 )
 
 type MarketData struct {
-	Time        time.Time `gorm:"primaryKey; type:text"`
-	Coin        string    `gorm:"type:text"`
-	High        float64   `gorm:"type:real"`
-	Low         float64   `gorm:"type:real"`
-	Open        float64   `gorm:"type:real"`
-	Close       float64   `gorm:"type:real"`
+	Id          int64     `gorm:"primaryKey; type:bigserial"`
+	Time        time.Time `gorm:"type:timestamp"`
+	Coin        string    `gorm:"type:varchar(16)"`
+	High        float64   `gorm:"type:money"`
+	Low         float64   `gorm:"type:money"`
+	Open        float64   `gorm:"type:money"`
+	Close       float64   `gorm:"type:money"`
 	Volume      float64   `gorm:"type:int"`
-	Granularity int       `gorm:"type:int2"`
+	Granularity int       `gorm:"type:int"`
 }
 
 // Create this typedef to distinguish data the bot collects live vs past data
 type HistoricalData MarketData
 
 type OrderBook struct {
-	Id             string    `gorm:"primaryKey; type:text"`
-	Price          float64   `gorm:"type:real"`
-	Size           float64   `gorm:"type:real"`
-	ProductId      string    `gorm:"type:text"`
-	Side           string    `gorm:"type:text"`
-	Funds          float64   `gorm:"type:real"`
-	SpecifiedFunds float64   `gorm:"type:real"`
-	Type           string    `gorm:"type:text"`
-	CreatedAt      time.Time `gorm:"type:text"`
-	DoneAt         time.Time `gorm:"type:text"`
-	Cancelled      bool      `gorm:"type:int1"`
-	FillFees       float64   `gorm:"type:real"`
-	FilledSize     float64   `gorm:"type:real"`
-	ExecutedValue  float64   `gorm:"type:real"`
-	Status         string    `gorm:"type:text"`
-	Settled        bool      `gorm:"type:int1"`
+	Id             string    `gorm:"primaryKey; type:varchar(128)"`
+	Price          float64   `gorm:"type:money"`
+	Size           float64   `gorm:"type:float8"`
+	ProductId      string    `gorm:"type:varchar(16)"`
+	Side           string    `gorm:"type:varchar(4)"`
+	Funds          float64   `gorm:"type:float8"`
+	SpecifiedFunds float64   `gorm:"type:float8"`
+	Type           string    `gorm:"type:varchar(32)"`
+	CreatedAt      time.Time `gorm:"type:timestamp"`
+	DoneAt         time.Time `gorm:"type:timestamp"`
+	Cancelled      bool      `gorm:"type:bool"`
+	FillFees       float64   `gorm:"type:float8"`
+	FilledSize     float64   `gorm:"type:float8"`
+	ExecutedValue  float64   `gorm:"type:float8"`
+	Status         string    `gorm:"type:varchar(32)"`
+	Settled        bool      `gorm:"type:bool"`
 }
