@@ -109,9 +109,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	var conf config.Config
+	var err error
 	// Load in config file
-	conf, err := config.Parse("config.toml")
-	Check(err)
+	if len(config.CLI.Config) > 0 {
+		conf, err = config.Parse(config.CLI.Config)
+		Check(err)
+	} else {
+		conf, err = config.Parse("config.toml")
+		Check(err)
+	}
 
 	// Run command line parsing
 	config.ArgParse()
