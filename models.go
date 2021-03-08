@@ -12,7 +12,7 @@ type MarketData struct {
 	Low         float64   `gorm:"type:money"`
 	Open        float64   `gorm:"type:money"`
 	Close       float64   `gorm:"type:money"`
-	Volume      float64   `gorm:"type:int"`
+	Volume      float64   `gorm:"type:float8"`
 	Granularity int       `gorm:"type:int"`
 }
 
