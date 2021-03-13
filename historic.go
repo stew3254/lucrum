@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"errors"
 	"io"
@@ -54,6 +55,7 @@ func GetHistoricRatesGranularities() []int {
 
 // SaveHistoricalRates grabs the data for a coin
 func SaveHistoricalRates(
+	ctx context.Context,
 	client *coinbasepro.Client,
 	rl *ratelimit.RateLimiter,
 	params HistoricRateParams,
@@ -76,6 +78,14 @@ func SaveHistoricalRates(
 	nextTime := params.Start.Add(time.Duration(params.Granularity) * time.Second * MaxHistoricRates)
 	tempTime := params.Start
 	getRates := func(param HistoricRateParams) error {
+		// Check to see if the signal interrupt has happened since the last call
+		select {
+		case <-ctx.Done():
+			log.Println("Received an interrupt. Shutting down gracefully")
+			os.Exit(SIGNAL)
+		default:
+			// Do nothing
+		}
 		// Be brief on the critical section (although in 1 thread right now this doesn't matter)
 		rl.Lock()
 		// Get the historic rates

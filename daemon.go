@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/preichenberger/go-coinbasepro/v2"
 	"github.com/sevlyar/go-daemon"
 )
 
@@ -89,14 +88,7 @@ func wsDaemonHelper(ctx context.Context, conf config.Config, child *os.Process) 
 	if child == nil {
 		// Call the dispatcher
 		// TODO make a config file to read this stuff from
-		websocket.WSDispatcher(ctx, conf, []coinbasepro.MessageChannel{
-			{
-				Name: "ticker",
-				ProductIds: []string{
-					"BTC-USD",
-				},
-			},
-		})
+		websocket.WSDispatcher(ctx, conf)
 	}
 	// On parent we just return because more work might need to be done
 }

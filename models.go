@@ -5,22 +5,30 @@ import (
 )
 
 type MarketData struct {
-	Id           int64     `gorm:"primaryKey; type:bigserial"`
-	Time         time.Time `gorm:"type:timestamp"`
-	Coin         string    `gorm:"type:varchar(16)"`
-	High         float64   `gorm:"type:money"`
-	Low          float64   `gorm:"type:money"`
-	Open         float64   `gorm:"type:money"`
-	Close        float64   `gorm:"type:money"`
-	Volume       float64   `gorm:"type:float8"`
-	Granularity  int       `gorm:"type:int"`
-	BuyOrders    int       `gorm:"type:float8"`
-	SellOrders   int       `gorm:"type:float8"`
-	FilledOrders int       `gorm:"type:float8"`
-	HighAmount   float64   `gorm:"type:float8"`
-	LowAmount    float64   `gorm:"type:float8"`
-	AvgAmount    float64   `gorm:"type:float8"`
-	VarAmount    float64   `gorm:"type:float8"`
+	Id                int64     `gorm:"primaryKey; type:bigserial"`
+	Time              time.Time `gorm:"type:timestamp"`
+	Coin              string    `gorm:"type:varchar(16)"`
+	High              float64   `gorm:"type:money"`
+	Low               float64   `gorm:"type:money"`
+	Average           float64   `gorm:"type:money"`
+	Open              float64   `gorm:"type:money"`
+	Close             float64   `gorm:"type:money"`
+	Volume            float64   `gorm:"type:float8"`
+	Granularity       int       `gorm:"type:int"`
+	BuyOrders         int       `gorm:"type:float8"`
+	SellOrders        int       `gorm:"type:float8"`
+	FilledBuyOrders   int       `gorm:"type:float8"`
+	FilledSellOrders  int       `gorm:"type:float8"`
+	HighBuyAmount     float64   `gorm:"type:float8"`
+	HighSellAmount    float64   `gorm:"type:float8"`
+	LowBuyAmount      float64   `gorm:"type:float8"`
+	LowSellAmount     float64   `gorm:"type:float8"`
+	AverageBuyPrice   float64   `gorm:"type:float8"`
+	AverageSellPrice  float64   `gorm:"type:float8"`
+	AverageAmount     float64   `gorm:"type:float8"`
+	VarianceBuyPrice  float64   `gorm:"type:float8"`
+	VarianceSellPrice float64   `gorm:"type:float8"`
+	VarianceAmount    float64   `gorm:"type:float8"`
 }
 
 type HistoricalData struct {

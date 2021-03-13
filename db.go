@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"lucrum/config"
+	"os"
 	"strings"
 	"time"
 
@@ -19,7 +21,7 @@ func CreateTables(db *gorm.DB) {
 }
 
 // ConnectDB is a simple wrapper to open a GORM DB
-func ConnectDB(conf config.Database) (db *gorm.DB) {
+func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 	// Make sure type is lower
 	dbType := strings.ToLower(conf.Type)
 
@@ -56,7 +58,19 @@ func ConnectDB(conf config.Database) (db *gorm.DB) {
 				} else {
 					log.Fatalf("could not connect to db after %d attempts", conf.Attempts)
 				}
-				time.Sleep(time.Duration(conf.Wait) * time.Second)
+				// Create a new timer to wait before trying again
+				timer := time.NewTimer(time.Second * conf.Wait)
+				for {
+					select {
+					// Try to handle signal interrupts while waiting
+					case <-ctx.Done():
+						log.Println("Received an interrupt. Shutting down gracefully")
+						os.Exit(0)
+					// Wait on the timer
+					case <-timer.C:
+						break
+					}
+				}
 			} else {
 				// No error to worry about
 				break

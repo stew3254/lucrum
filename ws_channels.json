@@ -1,0 +1,10 @@
+[
+  {
+    "name": "ticker",
+    "product_ids": ["BTC-USD"]
+  },
+  {
+    "name": "full",
+    "product_ids": ["BTC-USD"]
+  }
+]

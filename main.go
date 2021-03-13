@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"lucrum/config"
+	"lucrum/websocket"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,6 +18,8 @@ import (
 // DB is a global DB connection to be shared
 var DB *gorm.DB
 
+const SIGNAL int = 1
+
 // Used to actually run the bot
 func run(ctx context.Context, conf config.Config) {
 	// Handle signal interrupts
@@ -24,20 +27,20 @@ func run(ctx context.Context, conf config.Config) {
 		select {
 		case <-ctx.Done():
 			log.Println("Received an interrupt. Shutting down gracefully")
+			os.Exit(SIGNAL)
 		// There was no signal but the program is done anyways
 		default:
-		}
-		// Try to remove the PID file
-		if conf.Daemon.Daemonize {
-			err := os.Remove(conf.Daemon.PidFile)
-			if err != nil {
-				log.Println(err)
-			}
 		}
 	}()
 
 	// Create the DB
-	DB = ConnectDB(conf.DB)
+	DB = ConnectDB(ctx, conf.DB)
+
+	// Drop and recreate the tables
+	if conf.CLI.DropTables {
+		DropTables(DB)
+		CreateTables(DB)
+	}
 
 	// Get our coinbase client
 	client := coinbasepro.NewClient()
@@ -70,9 +73,9 @@ func run(ctx context.Context, conf config.Config) {
 	}
 
 	// Get historic rates
-	if len(config.CLI.HistoricRates) > 0 {
+	if len(conf.CLI.HistoricRates) > 0 {
 		// Loop through file names
-		for _, file := range config.CLI.HistoricRates {
+		for _, file := range conf.CLI.HistoricRates {
 			// Read in file
 			params, err := ReadRateFile(file)
 			Check(err)
@@ -86,7 +89,7 @@ func run(ctx context.Context, conf config.Config) {
 			)
 
 			for _, param := range params {
-				err = SaveHistoricalRates(client, rateLimiter, param)
+				err = SaveHistoricalRates(ctx, client, rateLimiter, param)
 				if err != nil {
 					log.Println(err)
 				}
@@ -95,13 +98,6 @@ func run(ctx context.Context, conf config.Config) {
 
 		return
 	}
-	rates, err := client.GetHistoricRates("ETH-USD", coinbasepro.GetHistoricRatesParams{
-		Start:       time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC),
-		End:         time.Date(2021, 1, 1, 0, 1, 0, 0, time.UTC),
-		Granularity: 60,
-	})
-	Check(err)
-	log.Println(rates)
 }
 
 func main() {
@@ -109,33 +105,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	var conf config.Config
-	var err error
 	// Load in config file
-	if len(config.CLI.Config) > 0 {
-		conf, err = config.Parse(config.CLI.Config)
-		Check(err)
-	} else {
-		conf, err = config.Parse("config.toml")
-		Check(err)
-	}
+	conf, err := config.Parse()
+	Check(err)
 
-	// Run command line parsing
-	config.ArgParse()
-
-	// Override sandbox configuration
-	if config.CLI.Sandbox {
-		conf.Bot.IsSandbox = true
-	} else if config.CLI.UnSandbox {
-		conf.Bot.IsSandbox = false
-	}
-
-	// Override daemon configurations
-	if config.CLI.Background {
-		conf.Daemon.Daemonize = true
-	}
-	if config.CLI.BackgroundWS {
-		conf.WsDaemon.Daemonize = true
+	// Check if we should just run the websocket
+	if conf.CLI.WS {
+		websocket.WSDispatcher(ctx, conf)
 	}
 
 	// See if we need to daemonize
