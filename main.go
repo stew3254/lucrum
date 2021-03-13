@@ -20,6 +20,19 @@ var DB *gorm.DB
 
 const SIGNAL int = 1
 
+// Used for testing stuff with the bot for now
+// I'll fill this in as I want to test stuff
+func testingStuff(client *coinbasepro.Client, conf config.Config) {
+	order := coinbasepro.Order{
+		Type:      "market",
+		Size:      ".001",
+		Side:      "buy",
+		ProductID: "BTC-USD",
+	}
+	order, err := client.CreateOrder(&order)
+	Check(err)
+}
+
 // Used to actually run the bot
 func run(ctx context.Context, conf config.Config) {
 	// Handle signal interrupts
@@ -98,6 +111,10 @@ func run(ctx context.Context, conf config.Config) {
 
 		return
 	}
+	// Only run this in the sandbox because I don't want to screw up when messing around
+	if conf.Bot.IsSandbox {
+		testingStuff(client, conf)
+	}
 }
 
 func main() {
@@ -111,6 +128,11 @@ func main() {
 
 	// Check if we should just run the websocket
 	if conf.CLI.WS {
+		if conf.Bot.IsSandbox {
+			log.Println("RUNNING IN SANDBOX MODE")
+		} else {
+			log.Println("RUNNING IN PRODUCTION MODE")
+		}
 		websocket.WSDispatcher(ctx, conf)
 	}
 

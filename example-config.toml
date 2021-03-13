@@ -18,6 +18,17 @@ api_key = "key"
 api_secret = "secret"
 api_passphrase = "passphrase"
 
+# Which channels to listen to
+[bot.websocket]
+channels = [
+    #    { name = "heartbeat", product_ids = ["BTC-USD"] },
+    #    { name = "status", product_ids = ["BTC-USD"] },
+        { name = "ticker", product_ids = ["BTC-USD"] },
+    #    { name = "level2", product_ids = ["BTC-USD"] },
+    #    { name = "matches", product_ids = ["BTC-USD"] },
+    #    { name = "full", product_ids = ["BTC-USD"] }
+]
+
 # Determines if the bot should be daemonized
 [daemon]
 daemonize = false
@@ -27,9 +38,8 @@ log_file = "logs/lucrum.log"
 log_file_perms = "0644"
 
 # Determines if the websocket portion should be daemonized
-# NOTE: If the bot is daemonized this will be daemonized too
 [websocket_daemon]
-daemonize = false
+daemonize = true
 pid_file = "pid/websocket.pid"
 pid_file_perms = "0644"
 log_file = "logs/websocket.log"
@@ -37,19 +47,13 @@ log_file_perms = "0644"
 
 # Database information
 [database]
-type = "sqlite"
-name = "lucrum.db"
-host = ""
-port = 0
-user = ""
-passphrase = ""
+type = "postgres"
+name = "lucrum"
+host = "localhost"
+port = 5432
+user = "lucrum"
+passphrase = "password"
 # How many attempts to make before giving up
 attempts = 5
 # How long to wait between requests in seconds
 connection_wait = 5
-
-# Redis information
-[redis]
-name = 0
-host = "localhost"
-port = 6379

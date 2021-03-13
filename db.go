@@ -59,7 +59,7 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 					log.Fatalf("could not connect to db after %d attempts", conf.Attempts)
 				}
 				// Create a new timer to wait before trying again
-				timer := time.NewTimer(time.Second * conf.Wait)
+				timer := time.After(time.Second * conf.Wait)
 				for {
 					select {
 					// Try to handle signal interrupts while waiting
@@ -67,10 +67,11 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 						log.Println("Received an interrupt. Shutting down gracefully")
 						os.Exit(0)
 					// Wait on the timer
-					case <-timer.C:
-						break
+					case <-timer:
+						goto TimeExpired
 					}
 				}
+			TimeExpired:
 			} else {
 				// No error to worry about
 				break
