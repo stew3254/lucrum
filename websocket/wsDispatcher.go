@@ -2,47 +2,25 @@ package websocket
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
 	"log"
 	"lucrum/config"
 	"os"
-
-	"golang.org/x/net/websocket"
 
 	ws "github.com/gorilla/websocket"
 	"github.com/preichenberger/go-coinbasepro/v2"
 )
 
-func Authenticate(conn *ws.Conn, conf config.Config, msgs []coinbasepro.MessageChannel) error {
-	// Subscribe
-	subscribe := AuthenticationMessage{
+func Authenticate(conn *ws.Conn, conf config.Coinbase, msgs []coinbasepro.MessageChannel) error {
+	// Create unsigned subscription message
+	msg := coinbasepro.Message{
 		Type:     "subscribe",
 		Channels: msgs,
 	}
 
-	// Decode the secret into the hmac key
-	hmacKey, err := base64.StdEncoding.DecodeString(conf.Bot.Coinbase.Secret)
+	// Sign the message
+	subscribe, err := msg.Sign(conf.Secret, conf.Key, conf.Passphrase)
 	if err != nil {
 		log.Fatalln("Authentication error:", err)
-	}
-
-	// Create the signature
-	signature := hmac.New(sha256.New, hmacKey)
-
-	// Add all other parameters
-	subscribe.B64Key = hmacKey
-	subscribe.Signature = signature
-
-	b, err := json.Marshal(&subscribe)
-	if err != nil {
-		return err
-	}
-
-	if err = conn.WriteMessage(websocket.TextFrame, b); err != nil {
-		return err
 	}
 
 	// Write our subscription message
@@ -177,8 +155,16 @@ func WSDispatcher(
 		log.Fatalln(err)
 	}
 
+	// Get credentials to pass to authenticate
+	var creds config.Coinbase
+	if conf.Bot.IsSandbox {
+		creds = conf.Bot.Sandbox
+	} else {
+		creds = conf.Bot.Coinbase
+	}
+
 	// Try to authenticate to the websocket
-	if err = Authenticate(conn, conf, msgChannels); err != nil {
+	if err = Authenticate(conn, creds, msgChannels); err != nil {
 		log.Fatalln("Authentication failed:", err)
 	}
 
