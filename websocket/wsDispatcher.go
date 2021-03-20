@@ -10,6 +10,7 @@ import (
 	"github.com/preichenberger/go-coinbasepro/v2"
 )
 
+// WsMessageHandler takes care of calling the function that handles a message
 func WSMessageHandler(msgChannel chan coinbasepro.Message, handler func(msg coinbasepro.Message)) {
 	// Forever look for updates
 	var lastSequence int64
@@ -25,7 +26,44 @@ func WSMessageHandler(msgChannel chan coinbasepro.Message, handler func(msg coin
 	}
 }
 
+// Read messages out of the websocket
+func readMessages(
+	wsConn *ws.Conn,
+	msgChan chan coinbasepro.Message,
+	errChan chan error,
+	done chan struct{},
+) {
+	for {
+		// Get the message
+		msg := coinbasepro.Message{}
+		// _, b, err := wsConn.ReadMessage()
+		// log.Println(string(b))
+		if err := wsConn.ReadJSON(&msg); err != nil {
+			select {
+			// This was closed normally, it's not a real error
+			case <-done:
+				return
+			// This was not closed normally, it's a real error
+			default:
+			}
+			log.Println(err)
+			// Send the error back
+			errChan <- err
+			return
+		}
+
+		// Send the message
+		msgChan <- msg
+	}
+}
+
 func WSDispatcher(ctx context.Context, conf config.Config) {
+	// This is used so we can receive user specific messages
+	// Due to how coinbase set up their websocket, it's not possible to tell
+	// with just one connection
+	seenUser := false
+	seenFull := false
+
 	// First filter our duplicate msgChannels
 	channels := make(map[string]chan coinbasepro.Message, len(conf.Bot.Ws.Channels))
 	for _, channel := range conf.Bot.Ws.Channels {
@@ -46,11 +84,25 @@ func WSDispatcher(ctx context.Context, conf config.Config) {
 			case "level2":
 				go WSMessageHandler(channels[channel.Name], HandleLevel2)
 			case "user":
-				go WSMessageHandler(channels[channel.Name], HandleUser)
+				// In case multiple have been passed in, ignore them
+				if !seenUser {
+					seenUser = true
+					go WSMessageHandler(channels[channel.Name], HandleUser)
+				}
 			case "matches":
 				go WSMessageHandler(channels[channel.Name], HandleMatches)
 			case "full":
-				go WSMessageHandler(channels[channel.Name], HandleFull)
+				// Since full channel and user channel look the same,
+				// this is the only decent method of confirming they are different
+				// TODO FINISH THIS
+				if seenUser && !seenFull {
+					seenFull = true
+					delete(channels, channel.Name)
+					go WSDispatcher(ctx, conf)
+				} else if !seenUser {
+					// Normal usage here
+					go WSMessageHandler(channels[channel.Name], HandleFull)
+				}
 			}
 		}
 	}
@@ -94,34 +146,8 @@ func WSDispatcher(ctx context.Context, conf config.Config) {
 	// Create a channel to signal that we are done
 	done := make(chan struct{}, 1)
 
-	// Read messages out of the websocket
-	readMessages := func(msgChan chan coinbasepro.Message, errChan chan error) {
-		for {
-			// Get the message
-			msg := coinbasepro.Message{}
-			// _, b, err := wsConn.ReadMessage()
-			// log.Println(string(b))
-			if err = wsConn.ReadJSON(&msg); err != nil {
-				select {
-				// This was closed normally, it's not a real error
-				case <-done:
-					return
-				// This was not closed normally, it's a real error
-				default:
-				}
-				log.Println(err)
-				// Send the error back
-				errChan <- err
-				return
-			}
-
-			// Send the message
-			msgChan <- msg
-		}
-	}
-
 	// Start the message reader
-	go readMessages(msgChan, errChan)
+	go readMessages(wsConn, msgChan, errChan, done)
 
 	// Constantly wait for messages
 	// Then send them to appropriate msgChannels to handle them

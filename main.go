@@ -27,9 +27,10 @@ func testingStuff(client *coinbasepro.Client, conf config.Config) {
 		Type:      "market",
 		Size:      ".001",
 		Side:      "buy",
-		ProductID: "BTC-USD",
+		ProductID: "ETC-USD",
 	}
 	order, err := client.CreateOrder(&order)
+	log.Println(order)
 	Check(err)
 }
 

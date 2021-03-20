@@ -87,7 +87,6 @@ func wsDaemonHelper(ctx context.Context, conf config.Config, child *os.Process) 
 	// This is the child
 	if child == nil {
 		// Call the dispatcher
-		// TODO make a config file to read this stuff from
 		websocket.WSDispatcher(ctx, conf)
 	}
 	// On parent we just return because more work might need to be done
