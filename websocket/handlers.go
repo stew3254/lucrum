@@ -18,11 +18,7 @@ func HandleStatus(msg coinbasepro.Message) {
 
 // Handle heartbeat messages
 func HandleHeartbeat(msg coinbasepro.Message) {
-	out, err := json.Marshal(msg)
-	if err != nil {
-		log.Println(err)
-	}
-	log.Println(string(out))
+	// Do nothing because it's simply so the channel doesn't close
 }
 
 // Handle ticker messages

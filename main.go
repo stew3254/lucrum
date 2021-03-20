@@ -134,7 +134,9 @@ func main() {
 		} else {
 			log.Println("RUNNING IN PRODUCTION MODE")
 		}
-		websocket.WSDispatcher(ctx, conf)
+		// Have to pass in channels due to the weird way the coinbase channels work
+		// It doesn't let you differentiate between user and full channels
+		websocket.WSDispatcher(ctx, conf, conf.Bot.Ws.Channels)
 	}
 
 	// See if we need to daemonize

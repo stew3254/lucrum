@@ -87,7 +87,7 @@ func wsDaemonHelper(ctx context.Context, conf config.Config, child *os.Process) 
 	// This is the child
 	if child == nil {
 		// Call the dispatcher
-		websocket.WSDispatcher(ctx, conf)
+		websocket.WSDispatcher(ctx, conf, conf.Bot.Ws.Channels)
 	}
 	// On parent we just return because more work might need to be done
 }

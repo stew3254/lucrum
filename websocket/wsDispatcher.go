@@ -2,13 +2,55 @@ package websocket
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"log"
 	"lucrum/config"
 	"os"
 
+	"golang.org/x/net/websocket"
+
 	ws "github.com/gorilla/websocket"
 	"github.com/preichenberger/go-coinbasepro/v2"
 )
+
+func Authenticate(conn *ws.Conn, conf config.Config, msgs []coinbasepro.MessageChannel) error {
+	// Subscribe
+	subscribe := AuthenticationMessage{
+		Type:     "subscribe",
+		Channels: msgs,
+	}
+
+	// Decode the secret into the hmac key
+	hmacKey, err := base64.StdEncoding.DecodeString(conf.Bot.Coinbase.Secret)
+	if err != nil {
+		log.Fatalln("Authentication error:", err)
+	}
+
+	// Create the signature
+	signature := hmac.New(sha256.New, hmacKey)
+
+	// Add all other parameters
+	subscribe.B64Key = hmacKey
+	subscribe.Signature = signature
+
+	b, err := json.Marshal(&subscribe)
+	if err != nil {
+		return err
+	}
+
+	if err = conn.WriteMessage(websocket.TextFrame, b); err != nil {
+		return err
+	}
+
+	// Write our subscription message
+	if err := conn.WriteJSON(subscribe); err != nil {
+		log.Fatalln(err)
+	}
+	return nil
+}
 
 // WsMessageHandler takes care of calling the function that handles a message
 func WSMessageHandler(msgChannel chan coinbasepro.Message, handler func(msg coinbasepro.Message)) {
@@ -57,7 +99,11 @@ func readMessages(
 	}
 }
 
-func WSDispatcher(ctx context.Context, conf config.Config) {
+func WSDispatcher(
+	ctx context.Context,
+	conf config.Config,
+	msgChannels []coinbasepro.MessageChannel,
+) {
 	// This is used so we can receive user specific messages
 	// Due to how coinbase set up their websocket, it's not possible to tell
 	// with just one connection
@@ -65,8 +111,8 @@ func WSDispatcher(ctx context.Context, conf config.Config) {
 	seenFull := false
 
 	// First filter our duplicate msgChannels
-	channels := make(map[string]chan coinbasepro.Message, len(conf.Bot.Ws.Channels))
-	for _, channel := range conf.Bot.Ws.Channels {
+	channels := make(map[string]chan coinbasepro.Message, len(msgChannels))
+	for _, channel := range msgChannels {
 		// Just see if the channel is in the map
 		if _, ok := channels[channel.Name]; !ok {
 			// Create a new buffered channel.
@@ -97,8 +143,11 @@ func WSDispatcher(ctx context.Context, conf config.Config) {
 				// TODO FINISH THIS
 				if seenUser && !seenFull {
 					seenFull = true
+					// Delete the old channel since it is no longer needed
 					delete(channels, channel.Name)
-					go WSDispatcher(ctx, conf)
+					// Create a new dispatcher to explicitly handle this
+					newMsgChannels := []coinbasepro.MessageChannel{channel}
+					go WSDispatcher(ctx, conf, newMsgChannels)
 				} else if !seenUser {
 					// Normal usage here
 					go WSMessageHandler(channels[channel.Name], HandleFull)
@@ -109,15 +158,15 @@ func WSDispatcher(ctx context.Context, conf config.Config) {
 
 	// Create a websocket to coinbase
 	var wsDialer ws.Dialer
-	var wsConn *ws.Conn
+	var conn *ws.Conn
 	var err error
 	if conf.Bot.IsSandbox {
-		wsConn, _, err = wsDialer.Dial(
+		conn, _, err = wsDialer.Dial(
 			conf.Bot.Sandbox.WsURL,
 			nil,
 		)
 	} else {
-		wsConn, _, err = wsDialer.Dial(
+		conn, _, err = wsDialer.Dial(
 			conf.Bot.Coinbase.WsURL,
 			nil,
 		)
@@ -128,15 +177,9 @@ func WSDispatcher(ctx context.Context, conf config.Config) {
 		log.Fatalln(err)
 	}
 
-	// Subscribe with our msgChannels
-	subscribe := coinbasepro.Message{
-		Type:     "subscribe",
-		Channels: conf.Bot.Ws.Channels,
-	}
-
-	// Write our subscription message
-	if err := wsConn.WriteJSON(subscribe); err != nil {
-		log.Fatalln(err)
+	// Try to authenticate to the websocket
+	if err = Authenticate(conn, conf, msgChannels); err != nil {
+		log.Fatalln("Authentication failed:", err)
 	}
 
 	// Create a channel to send the messages over
@@ -147,7 +190,7 @@ func WSDispatcher(ctx context.Context, conf config.Config) {
 	done := make(chan struct{}, 1)
 
 	// Start the message reader
-	go readMessages(wsConn, msgChan, errChan, done)
+	go readMessages(conn, msgChan, errChan, done)
 
 	// Constantly wait for messages
 	// Then send them to appropriate msgChannels to handle them
@@ -158,6 +201,8 @@ func WSDispatcher(ctx context.Context, conf config.Config) {
 			// Find the corresponding Go channel in the map to send the message to
 			msgType := msg.Type
 			switch msg.Type {
+			case "error":
+				log.Println(msg.Message, msg.Reason)
 			case "snapshot":
 				// Correct the type
 				msgType = "level2"
@@ -172,19 +217,39 @@ func WSDispatcher(ctx context.Context, conf config.Config) {
 				msgType = "matches"
 			case "received":
 				// Correct the type
-				msgType = "full"
+				if seenUser {
+					msgType = "user"
+				} else {
+					msgType = "full"
+				}
 			case "open":
 				// Correct the type
-				msgType = "full"
+				if seenUser {
+					msgType = "user"
+				} else {
+					msgType = "full"
+				}
 			case "done":
 				// Correct the type
-				msgType = "full"
+				if seenUser {
+					msgType = "user"
+				} else {
+					msgType = "full"
+				}
 			case "change":
 				// Correct the type
-				msgType = "full"
+				if seenUser {
+					msgType = "user"
+				} else {
+					msgType = "full"
+				}
 			case "activate":
 				// Correct the type
-				msgType = "full"
+				if seenUser {
+					msgType = "user"
+				} else {
+					msgType = "full"
+				}
 			}
 
 			if channel, ok := channels[msgType]; ok {
@@ -200,7 +265,7 @@ func WSDispatcher(ctx context.Context, conf config.Config) {
 			// Send signal to the message reader that we are done
 			done <- struct{}{}
 			// Close the connection so the reader sending in the messages errors and dies
-			_ = wsConn.Close()
+			_ = conn.Close()
 			os.Exit(1)
 		}
 	}
