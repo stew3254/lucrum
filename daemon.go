@@ -14,6 +14,7 @@ import (
 	"github.com/sevlyar/go-daemon"
 )
 
+// Creates a daemon that runs the helper function supplied
 func daemonize(
 	ctx context.Context,
 	config config.Config,

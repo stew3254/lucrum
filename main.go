@@ -18,8 +18,6 @@ import (
 // DB is a global DB connection to be shared
 var DB *gorm.DB
 
-const SIGNAL int = 1
-
 // Used for testing stuff with the bot for now
 // I'll fill this in as I want to test stuff
 func testingStuff(client *coinbasepro.Client, conf config.Config) {
@@ -32,7 +30,9 @@ func testingStuff(client *coinbasepro.Client, conf config.Config) {
 	log.Println("Test")
 	order, err := client.CreateOrder(&order)
 	log.Println(order)
-	Check(err)
+	if err != nil {
+		log.Fatalln(err)
+	}
 }
 
 // Used to actually run the bot
@@ -42,12 +42,14 @@ func run(ctx context.Context, conf config.Config) {
 		select {
 		case <-ctx.Done():
 			log.Println("Received an interrupt. Shutting down gracefully")
-			os.Exit(SIGNAL)
+			os.Exit(1)
 		// There was no signal but the program is done anyways
 		default:
 		}
 	}()
 
+	// Check to see if we're sandboxed or not ot make it easier to use
+	// the different bot configs
 	var botConf config.Bot
 	if conf.Conf.IsSandbox {
 		botConf = conf.Conf.Sandbox
@@ -84,7 +86,9 @@ func run(ctx context.Context, conf config.Config) {
 		for _, file := range conf.CLI.HistoricRates {
 			// Read in file
 			params, err := ReadRateFile(file)
-			Check(err)
+			if err != nil {
+				log.Fatalln(err)
+			}
 
 			// Create a RateLimiter to not overwhelm the API
 			rateLimiter := ratelimit.NewRateLimiter(
@@ -117,8 +121,12 @@ func main() {
 
 	// Load in config file
 	conf, err := config.Parse()
-	Check(err)
+	if err != nil {
+		log.Fatalln(err)
+	}
 
+	// Check to see if we're sandboxed or not ot make it easier to use
+	// the different bot configs
 	var botConf config.Bot
 	if conf.Conf.IsSandbox {
 		botConf = conf.Conf.Sandbox
@@ -126,7 +134,7 @@ func main() {
 		botConf = conf.Conf.Production
 	}
 
-	// Create the DB
+	// Connect to the DB including tables if necessary
 	DB = ConnectDB(ctx, botConf.DB)
 
 	// Drop and recreate the tables
@@ -148,7 +156,6 @@ func main() {
 	}
 
 	// See if we need to daemonize
-	// Note we don't care to use the websocket if it's not as a daemon (for now)
 	if conf.Daemon.Daemonize {
 		runner := func(ctx context.Context, coinbaseConf config.Config, child *os.Process) {
 			// Run the real program if it's the child

@@ -18,7 +18,7 @@ func HandleStatus(msg coinbasepro.Message) {
 
 // Handle heartbeat messages
 func HandleHeartbeat(msg coinbasepro.Message) {
-	// Do nothing because it's simply so the channel doesn't close
+	// Do nothing because it's simply so the websocket doesn't close
 }
 
 // Handle ticker messages
@@ -35,7 +35,7 @@ func HandleLevel2(msg coinbasepro.Message) {
 	log.Println(string(out))
 }
 
-// Handle user only messages from full channel
+// Handle user only messages from a full channel
 func HandleUser(msg coinbasepro.Message) {
 	out, err := json.Marshal(msg)
 	if err != nil {

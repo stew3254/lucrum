@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// CreateTables uses the models from models.go to create database tables
 func CreateTables(db *gorm.DB) {
 	Check(db.Migrator().AutoMigrate(&OrderBook{}))
 	Check(db.Migrator().AutoMigrate(&MarketData{}))
@@ -27,11 +28,13 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 
 	// If using a SQLite DB
 	if dbType == "sqlite" {
+		// Just open the db
 		db, err := gorm.Open(sqlite.Open(conf.Name), &gorm.Config{})
 		if err != nil {
 			log.Fatalln("Failed to open the database with reason:", err)
 		}
 		log.Println("Connection to DB succeeded!")
+		// Then create the tables
 		CreateTables(db)
 		return db
 	} else if dbType == "postgres" {
@@ -45,9 +48,11 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 			conf.Passphrase,
 		)
 
+		// Loop through possible connection attempts
 		for i := 1; i <= conf.Attempts; i++ {
 			var err error
 			db, err = gorm.Open(postgres.Open(connectionString), &gorm.Config{})
+			// Failure to connect to the database
 			if err != nil {
 				if i != conf.Attempts {
 					log.Printf(
@@ -60,6 +65,8 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 				}
 				// Create a new timer to wait before trying again
 				timer := time.After(time.Second * conf.Wait)
+				// Sit here and wait until an interrupt is received or the timer expires
+				// There might be a better way to not busy wait
 				for {
 					select {
 					// Try to handle signal interrupts while waiting
@@ -78,13 +85,15 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 			}
 		}
 		log.Println("Connection to db succeeded!")
+		// Now create the tables
 		CreateTables(db)
 		return db
 	}
 	return nil
 }
 
-// DropTables drops everything in the DB
+// DropTables drops all tables in the DB, but is not a generic function if models have been
+// added to models.go, they must be placed in here by hand
 func DropTables(db *gorm.DB) {
 	// Drop tables in an order that won't invoke errors from foreign key constraints
 	Check(db.Migrator().DropTable(&MarketData{}))

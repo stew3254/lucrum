@@ -13,7 +13,7 @@ type CommandLine struct {
 	HistoricRates []string `short:"r" help:"CSV files for rates to read in"`
 	Sandbox       bool     `short:"s" help:"Run the box in Sandbox mode" xor:"sandbox"`
 	UnSandbox     bool     `short:"u" help:"Run the box without Sandbox mode" xor:"sandbox"`
-	WS            bool     `short:"w" help:"Run the websocket in the foreground"`
+	WS            bool     `short:"w" help:"Explicitly run only the websocket in the foreground"`
 	Verbose       bool     `short:"v" help:"Increase verbosity level"`
 }
 

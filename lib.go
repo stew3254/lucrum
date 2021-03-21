@@ -9,20 +9,21 @@ import (
 	"github.com/sevlyar/go-daemon"
 )
 
-// Check simple fails if the error is not nil
+// Check simply fails if the error is not nil
 func Check(err error) {
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 }
 
 // CheckErr simple fails if the error is not nil but with the message provided
 func CheckErr(err error, msg string) {
 	if err != nil {
-		log.Fatal(msg)
+		log.Fatalln(msg)
 	}
 }
 
+// AlertUser gets a confirmation from the user so they know they aren't in a sandbox
 func AlertUser() (err error) {
 	// Check to see if we're already daemonized or not
 	if daemon.WasReborn() {
@@ -45,7 +46,8 @@ func AlertUser() (err error) {
 	text = strings.Trim(strings.ToLower(text), "\n")
 	if text != "y" && text != "yes" {
 		log.Println("Okay, shutting down")
-		log.Println("To run in sandbox mode, set 'is_sandbox = true' in the .env file")
+		log.Println("To run in sandbox mode, " +
+			"set 'is_sandbox = true' in the config file or supply -s as a command line argument")
 		os.Exit(0)
 	}
 	return

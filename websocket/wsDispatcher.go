@@ -10,6 +10,7 @@ import (
 	"github.com/preichenberger/go-coinbasepro/v2"
 )
 
+// Authenticate sends the subscription message to the websocket and authenticates
 func Authenticate(conn *ws.Conn, conf config.Coinbase, msgs []coinbasepro.MessageChannel) error {
 	// Create unsigned subscription message
 	msg := coinbasepro.Message{
@@ -77,6 +78,9 @@ func readMessages(
 	}
 }
 
+// WSDispatcher takes in the channels, sets up the websocket connection and creates
+// the appropriate message handlers to handle future messages and will manage which ones
+// it sends its messages to
 func WSDispatcher(
 	ctx context.Context,
 	conf config.Config,
@@ -84,19 +88,26 @@ func WSDispatcher(
 ) {
 	// This is used so we can receive user specific messages
 	// Due to how coinbase set up their websocket, it's not possible to tell
-	// with just one connection
+	// with just one connection, but with at most 2
 	seenUser := false
+	// This way I don't keep accidentally spawning more and more websocket connections
 	seenFull := false
 
 	// First filter our duplicate msgChannels
-	channels := make(map[string]chan coinbasepro.Message, len(msgChannels))
+	channels := make(map[string]chan coinbasepro.Message)
 	for _, channel := range msgChannels {
 		// Just see if the channel is in the map
 		if _, ok := channels[channel.Name]; !ok {
 			// Create a new buffered channel.
-			// We can hold up to 50 messages which is like a few seconds worth
-			// Probably will never reach this limit. This is good so we never miss messages
-			channels[channel.Name] = make(chan coinbasepro.Message, 50)
+			if channel.Name == "full" {
+				// We can hold up to 250 messages which is maybe like 2-3 seconds worth
+				// Probably will never reach this limit. This is good so we hopefully never block
+				channels[channel.Name] = make(chan coinbasepro.Message, 250)
+			} else {
+				// We can hold up to 50 messages which is like a few seconds worth for most channels
+				// Probably will never reach this limit. This is good so we hopefully never block
+				channels[channel.Name] = make(chan coinbasepro.Message, 50)
+			}
 			// Figure out which function to spawn with corresponding channel
 			switch channel.Name {
 			case "heartbeat":
@@ -118,7 +129,6 @@ func WSDispatcher(
 			case "full":
 				// Since full channel and user channel look the same,
 				// this is the only decent method of confirming they are different
-				// TODO FINISH THIS
 				if seenUser && !seenFull {
 					seenFull = true
 					// Delete the old channel since it is no longer needed
@@ -229,6 +239,7 @@ func WSDispatcher(
 				}
 			}
 
+			// If the channel exists, send the message over to the handler
 			if channel, ok := channels[msgType]; ok {
 				channel <- msg
 			}

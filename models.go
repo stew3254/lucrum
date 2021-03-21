@@ -4,6 +4,7 @@ import (
 	"time"
 )
 
+// MarketData is the the data that will be collected for the simulation and performance analysis
 type MarketData struct {
 	Id                int64     `gorm:"primaryKey; type:bigserial"`
 	Time              time.Time `gorm:"type:timestamp"`
@@ -31,6 +32,7 @@ type MarketData struct {
 	VarianceAmount    float64   `gorm:"type:float8"`
 }
 
+// HistoricalData is the historical data pulled from the Coinbase Pro API
 type HistoricalData struct {
 	Id          int64     `gorm:"primaryKey; type:bigserial"`
 	Time        time.Time `gorm:"type:timestamp"`
@@ -43,6 +45,7 @@ type HistoricalData struct {
 	Granularity int       `gorm:"type:int"`
 }
 
+// OrderBook is currently undecided
 type OrderBook struct {
 	Id             string    `gorm:"primaryKey; type:varchar(128)"`
 	Price          float64   `gorm:"type:money"`
