@@ -22,10 +22,15 @@ type Websocket struct {
 }
 
 type Bot struct {
-	IsSandbox bool      `json:"is_sandbox"`
-	Coinbase  Coinbase  `json:"coinbase"`
-	Sandbox   Coinbase  `json:"Sandbox"`
-	Ws        Websocket `json:"websocket"`
+	Coinbase Coinbase `json:"coinbase"`
+	DB       Database `json:"database"`
+}
+
+type ConfType struct {
+	IsSandbox  bool      `json:"is_sandbox"`
+	Production Bot       `json:"production"`
+	Sandbox    Bot       `json:"sandbox"`
+	Ws         Websocket `json:"websocket"`
 }
 
 type Daemon struct {
@@ -47,18 +52,10 @@ type Database struct {
 	Wait       time.Duration `json:"connection_wait"`
 }
 
-type Redis struct {
-	Name int8   `json:"name"`
-	Host string `json:"host"`
-	Port int16  `json:"port"`
-}
-
 type Config struct {
-	Bot      Bot      `json:"bot"`
+	Conf     ConfType `json:"conf"`
 	Daemon   Daemon   `json:"daemon"`
 	WsDaemon Daemon   `json:"websocket_daemon"`
-	DB       Database `json:"database"`
-	Redis    Redis    `json:"redis"`
 	CLI      CommandLine
 }
 
@@ -99,9 +96,9 @@ func Parse() (conf Config, err error) {
 
 	// Override Sandbox behavior
 	if cli.Sandbox {
-		conf.Bot.IsSandbox = true
+		conf.Conf.IsSandbox = true
 	} else if cli.UnSandbox {
-		conf.Bot.IsSandbox = false
+		conf.Conf.IsSandbox = false
 	}
 
 	return

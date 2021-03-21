@@ -134,37 +134,28 @@ func WSDispatcher(
 		}
 	}
 
+	// Get bot configuration
+	var botConf config.Bot
+	if conf.Conf.IsSandbox {
+		botConf = conf.Conf.Sandbox
+	} else {
+		botConf = conf.Conf.Production
+	}
+
 	// Create a websocket to coinbase
 	var wsDialer ws.Dialer
-	var conn *ws.Conn
-	var err error
-	if conf.Bot.IsSandbox {
-		conn, _, err = wsDialer.Dial(
-			conf.Bot.Sandbox.WsURL,
-			nil,
-		)
-	} else {
-		conn, _, err = wsDialer.Dial(
-			conf.Bot.Coinbase.WsURL,
-			nil,
-		)
-	}
+	conn, _, err := wsDialer.Dial(
+		botConf.Coinbase.WsURL,
+		nil,
+	)
 
 	// If the websocket fails the bot can't function
 	if err != nil {
 		log.Fatalln(err)
 	}
 
-	// Get credentials to pass to authenticate
-	var creds config.Coinbase
-	if conf.Bot.IsSandbox {
-		creds = conf.Bot.Sandbox
-	} else {
-		creds = conf.Bot.Coinbase
-	}
-
 	// Try to authenticate to the websocket
-	if err = Authenticate(conn, creds, msgChannels); err != nil {
+	if err = Authenticate(conn, botConf.Coinbase, msgChannels); err != nil {
 		log.Fatalln("Authentication failed:", err)
 	}
 

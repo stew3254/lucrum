@@ -29,6 +29,7 @@ func testingStuff(client *coinbasepro.Client, conf config.Config) {
 		Side:      "buy",
 		ProductID: "ETC-USD",
 	}
+	log.Println("Test")
 	order, err := client.CreateOrder(&order)
 	log.Println(order)
 	Check(err)
@@ -47,28 +48,19 @@ func run(ctx context.Context, conf config.Config) {
 		}
 	}()
 
-	// Create the DB
-	DB = ConnectDB(ctx, conf.DB)
-
-	// Drop and recreate the tables
-	if conf.CLI.DropTables {
-		DropTables(DB)
-		CreateTables(DB)
+	var botConf config.Bot
+	if conf.Conf.IsSandbox {
+		botConf = conf.Conf.Sandbox
+	} else {
+		botConf = conf.Conf.Production
 	}
 
 	// Get our coinbase client
 	client := coinbasepro.NewClient()
 
 	// Check if the bot is in a sandbox
-	if conf.Bot.IsSandbox {
+	if conf.Conf.IsSandbox {
 		log.Println("RUNNING IN SANDBOX MODE")
-		// Authenticate client configuration can be updated with ClientConfig
-		client.UpdateConfig(&coinbasepro.ClientConfig{
-			BaseURL:    conf.Bot.Sandbox.URL,
-			Key:        conf.Bot.Sandbox.Key,
-			Secret:     conf.Bot.Sandbox.Secret,
-			Passphrase: conf.Bot.Sandbox.Passphrase,
-		})
 	} else {
 		// Alert the user they are not in a sandbox
 		err := AlertUser()
@@ -76,15 +68,15 @@ func run(ctx context.Context, conf config.Config) {
 		if err != nil {
 			log.Fatalln(err)
 		}
-
-		// Authenticate client configuration can be updated with ClientConfig
-		client.UpdateConfig(&coinbasepro.ClientConfig{
-			BaseURL:    conf.Bot.Coinbase.URL,
-			Key:        conf.Bot.Coinbase.Key,
-			Secret:     conf.Bot.Coinbase.Secret,
-			Passphrase: conf.Bot.Coinbase.Passphrase,
-		})
 	}
+
+	// Authenticate client configuration can be updated with ClientConfig
+	client.UpdateConfig(&coinbasepro.ClientConfig{
+		BaseURL:    botConf.Coinbase.URL,
+		Key:        botConf.Coinbase.Key,
+		Secret:     botConf.Coinbase.Secret,
+		Passphrase: botConf.Coinbase.Passphrase,
+	})
 
 	// Get historic rates
 	if len(conf.CLI.HistoricRates) > 0 {
@@ -113,7 +105,7 @@ func run(ctx context.Context, conf config.Config) {
 		return
 	}
 	// Only run this in the sandbox because I don't want to screw up when messing around
-	if conf.Bot.IsSandbox {
+	if conf.Conf.IsSandbox {
 		testingStuff(client, conf)
 	}
 }
@@ -127,16 +119,32 @@ func main() {
 	conf, err := config.Parse()
 	Check(err)
 
+	var botConf config.Bot
+	if conf.Conf.IsSandbox {
+		botConf = conf.Conf.Sandbox
+	} else {
+		botConf = conf.Conf.Production
+	}
+
+	// Create the DB
+	DB = ConnectDB(ctx, botConf.DB)
+
+	// Drop and recreate the tables
+	if conf.CLI.DropTables {
+		DropTables(DB)
+		CreateTables(DB)
+	}
+
 	// Check if we should just run the websocket
 	if conf.CLI.WS {
-		if conf.Bot.IsSandbox {
+		if conf.Conf.IsSandbox {
 			log.Println("RUNNING IN SANDBOX MODE")
 		} else {
 			log.Println("RUNNING IN PRODUCTION MODE")
 		}
 		// Have to pass in channels due to the weird way the coinbase channels work
 		// It doesn't let you differentiate between user and full channels
-		websocket.WSDispatcher(ctx, conf, conf.Bot.Ws.Channels)
+		websocket.WSDispatcher(ctx, conf, conf.Conf.Ws.Channels)
 	}
 
 	// See if we need to daemonize
@@ -151,17 +159,17 @@ func main() {
 		}
 
 		// Determine if we're sandboxed or not
-		if conf.Bot.IsSandbox {
-			daemonize(ctx, conf, conf.Daemon, runner)
-		} else {
+		if !conf.Conf.IsSandbox {
 			// Alert the user they are not in a sandbox
 			err = AlertUser()
 			// This shouldn't have an error
 			if err != nil {
 				log.Fatalln(err)
 			}
-			daemonize(ctx, conf, conf.Daemon, runner)
 		}
+
+		// Daemonize now
+		daemonize(ctx, conf, conf.Daemon, runner)
 
 		// We don't want to call run() and will return here
 		return

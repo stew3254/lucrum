@@ -1,9 +1,9 @@
-[bot]
+[conf]
 # Determines whether the bot is in sandbox or live mode
 is_sandbox = true
 
 # Coinbase specification for the bot
-[bot.coinbase]
+[conf.production.coinbase]
 url = "https://api.pro.coinbase.com"
 websocket_url = "wss://ws-feed.pro.coinbase.com"
 api_key = "key"
@@ -11,7 +11,7 @@ api_secret = "secret"
 api_passphrase = "passphrase"
 
 # Coinbase Sandbox specification
-[bot.sandbox]
+[conf.sandbox.coinbase]
 url = "https://api-public.sandbox.pro.coinbase.com"
 websocket_url = "wss://ws-feed-public.sandbox.pro.coinbase.com"
 api_key = "key"
@@ -19,15 +19,41 @@ api_secret = "secret"
 api_passphrase = "passphrase"
 
 # Which channels to listen to
-[bot.websocket]
+[conf.websocket]
 channels = [
-    #    { name = "heartbeat", product_ids = ["BTC-USD"] },
-    #    { name = "status", product_ids = ["BTC-USD"] },
-        { name = "ticker", product_ids = ["BTC-USD"] },
-    #    { name = "level2", product_ids = ["BTC-USD"] },
-    #    { name = "matches", product_ids = ["BTC-USD"] },
-    #    { name = "full", product_ids = ["BTC-USD"] }
+        { name = "heartbeat", product_ids = ["BTC-USD"] },
+        #    { name = "status", product_ids = ["BTC-USD"] },
+        #    { name = "ticker", product_ids = ["BTC-USD"] },
+        #    { name = "level2", product_ids = ["BTC-USD"] },
+        #    { name = "user", product_ids = ["BTC-USD"] },
+        #    { name = "full", product_ids = ["BTC-USD"] }
 ]
+
+# Database information
+[conf.production.database]
+type = "postgres"
+name = "lucrum"
+host = "host"
+port = 5432
+user = "lucrum"
+passphrase = "passphrase"
+# How many attempts to make before giving up
+attempts = 5
+# How long to wait between requests in seconds
+connection_wait = 5
+
+# Database information
+[conf.sandbox.database]
+type = "postgres"
+name = "sandbox_lucrum"
+host = "localhost"
+port = 5432
+user = "lucrum"
+passphrase = "passphrase"
+# How many attempts to make before giving up
+attempts = 5
+# How long to wait between requests in seconds
+connection_wait = 5
 
 # Determines if the bot should be daemonized
 [daemon]
@@ -39,21 +65,8 @@ log_file_perms = "0644"
 
 # Determines if the websocket portion should be daemonized
 [websocket_daemon]
-daemonize = true
+daemonize = false
 pid_file = "pid/websocket.pid"
 pid_file_perms = "0644"
 log_file = "logs/websocket.log"
 log_file_perms = "0644"
-
-# Database information
-[database]
-type = "postgres"
-name = "lucrum"
-host = "localhost"
-port = 5432
-user = "lucrum"
-passphrase = "password"
-# How many attempts to make before giving up
-attempts = 5
-# How long to wait between requests in seconds
-connection_wait = 5
