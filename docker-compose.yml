@@ -4,7 +4,20 @@ services:
   db:
     image: "postgres:latest"
     container_name: "lucrum_db"
-    env_file: ".env"
+    environment:
+      - POSTGRES_DB=lucrum
+      - POSTGRES_USER=lucrum
+      - POSTGRES_PASSWORD=ih3oY6iGCEna6kJv#bRQyxD#CYLmt&
     restart: "unless-stopped"
     ports:
       - "5432:5432"
+  dev-db:
+    image: "postgres:latest"
+    container_name: "lucrum_dev_db"
+    environment:
+      - POSTGRES_DB=sandbox-lucrum
+      - POSTGRES_USER=lucrum
+      - POSTGRES_PASSWORD=uhS^pMVmKcrYe5cCWiMoP3*8Hf^fcw
+    restart: "unless-stopped"
+    ports:
+      - "8888:5432"

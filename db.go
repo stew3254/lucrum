@@ -51,6 +51,7 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 		// Loop through possible connection attempts
 		for i := 1; i <= conf.Attempts; i++ {
 			var err error
+			// TODO fix this when database cannot connect
 			db, err = gorm.Open(postgres.Open(connectionString), &gorm.Config{})
 			// Failure to connect to the database
 			if err != nil {
