@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"lucrum/config"
+	"lucrum/lib"
 	"lucrum/websocket"
 	"os"
 	"path/filepath"
@@ -32,17 +33,17 @@ func daemonize(
 	// Create log file path
 	dir, _ = filepath.Split(daemonConf.LogFile)
 	err = os.MkdirAll(dir, 0755)
-	Check(err)
+	lib.Check(err)
 
 	// Get workdir
 	cwd, err := os.Getwd()
-	Check(err)
+	lib.Check(err)
 
 	pidPerms, err := strconv.ParseUint(daemonConf.PidFilePerms, 8, 32)
-	Check(err)
+	lib.Check(err)
 
 	logPerms, err := strconv.ParseUint(daemonConf.LogFilePerms, 8, 32)
-	Check(err)
+	lib.Check(err)
 
 	// Create a new daemon context
 	daemonCtx := daemon.Context{
@@ -74,21 +75,21 @@ func daemonize(
 
 	// Daemonize
 	child, err := daemonCtx.Reborn()
-	Check(err)
+	lib.Check(err)
 
 	// Run on daemonize
 	helper(ctx, config, child)
 
 	// Release the daemon
 	err = daemonCtx.Release()
-	Check(err)
+	lib.Check(err)
 }
 
 func wsDaemonHelper(ctx context.Context, conf config.Config, child *os.Process) {
 	// This is the child
 	if child == nil {
 		// Call the dispatcher
-		websocket.WSDispatcher(ctx, conf, conf.Conf.Ws.Channels)
+		websocket.WSDispatcher(ctx, conf, DB, conf.Conf.Ws.Channels)
 	}
-	// On parent we just return because more work might need to be done
+	// On parent we just return, because more work might need to be done
 }

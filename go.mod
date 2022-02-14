@@ -10,7 +10,6 @@ require (
 	github.com/preichenberger/go-coinbasepro/v2 v2.0.5
 	github.com/sevlyar/go-daemon v0.1.5
 	github.com/stew3254/ratelimit v0.0.0-20210306225049-9c1a91ee464c
-	golang.org/x/net v0.0.0-20190813141303-74dc4d7220e7
 	golang.org/x/sys v0.0.0-20210112080510-489259a85091 // indirect
 	gorm.io/driver/postgres v1.0.8
 	gorm.io/driver/sqlite v1.1.4

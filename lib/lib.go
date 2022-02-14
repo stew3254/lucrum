@@ -1,12 +1,11 @@
-package main
+package lib
 
 import (
 	"bufio"
+	"github.com/sevlyar/go-daemon"
 	"log"
 	"os"
 	"strings"
-
-	"github.com/sevlyar/go-daemon"
 )
 
 // Check simply fails if the error is not nil
@@ -31,7 +30,7 @@ func AlertUser() (err error) {
 	}
 
 	// Alert user they are not in a sandbox
-	log.Println("YOU ARE NOT IN A SANDBOX! ARE YOU SURE YOU WANT TO CONTINUE? (Y/n)")
+	log.Println("YOU ARE NOT IN A SANDBOX! ARE YOU SURE YOU WANT TO CONTINUE? (y/N)")
 
 	// Try to read stdin
 	reader := bufio.NewReader(os.Stdin)

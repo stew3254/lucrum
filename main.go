@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"lucrum/config"
+	"lucrum/database"
+	"lucrum/lib"
 	"lucrum/websocket"
 	"os"
 	"os/signal"
@@ -21,18 +23,14 @@ var DB *gorm.DB
 // Used for testing stuff with the bot for now
 // I'll fill this in as I want to test stuff
 func testingStuff(client *coinbasepro.Client, conf config.Config) {
-	order := coinbasepro.Order{
-		Type:      "market",
-		Size:      ".001",
-		Side:      "buy",
-		ProductID: "ETC-USD",
-	}
-	log.Println("Test")
-	order, err := client.CreateOrder(&order)
-	log.Println(order)
+	book, err := client.GetBook("BTC-USD", 3)
 	if err != nil {
 		log.Fatalln(err)
 	}
+	for _, ask := range book.Asks {
+		log.Printf("Price: %s, Size: %s, #Orders: %d, ID: %s", ask.Price, ask.Size, ask.NumberOfOrders, ask.OrderID)
+	}
+	log.Println(book.Sequence)
 }
 
 // Used to actually run the bot
@@ -65,7 +63,7 @@ func run(ctx context.Context, conf config.Config) {
 		log.Println("RUNNING IN SANDBOX MODE")
 	} else {
 		// Alert the user they are not in a sandbox
-		err := AlertUser()
+		err := lib.AlertUser()
 		// If this errors we probably are daemonized and already asked for input
 		if err != nil {
 			log.Fatalln(err)
@@ -108,6 +106,7 @@ func run(ctx context.Context, conf config.Config) {
 
 		return
 	}
+
 	// Only run this in the sandbox because I don't want to screw up when messing around
 	if conf.Conf.IsSandbox {
 		testingStuff(client, conf)
@@ -135,13 +134,14 @@ func main() {
 	}
 
 	// Connect to the DB including tables if necessary
-	DB = ConnectDB(ctx, botConf.DB)
+	DB = database.ConnectDB(ctx, botConf.DB)
 
 	// Drop and recreate the tables
 	if conf.CLI.DropTables {
-		DropTables(DB)
-		CreateTables(DB)
+		database.DropTables(DB)
 	}
+
+	database.CreateTables(DB)
 
 	// Check if we should just run the websocket
 	if conf.CLI.WS {
@@ -150,9 +150,10 @@ func main() {
 		} else {
 			log.Println("RUNNING IN PRODUCTION MODE")
 		}
+
 		// Have to pass in channels due to the weird way the coinbase channels work
 		// It doesn't let you differentiate between user and full channels
-		websocket.WSDispatcher(ctx, conf, conf.Conf.Ws.Channels)
+		websocket.WSDispatcher(ctx, conf, DB, conf.Conf.Ws.Channels)
 	}
 
 	// See if we need to daemonize
@@ -168,7 +169,7 @@ func main() {
 		// Determine if we're sandboxed or not
 		if !conf.Conf.IsSandbox {
 			// Alert the user they are not in a sandbox
-			err = AlertUser()
+			err = lib.AlertUser()
 			// This shouldn't have an error
 			if err != nil {
 				log.Fatalln(err)

@@ -1,10 +1,12 @@
-package main
+package database
 
 import (
 	"context"
 	"fmt"
+	"github.com/preichenberger/go-coinbasepro/v2"
 	"log"
 	"lucrum/config"
+	"lucrum/lib"
 	"os"
 	"strings"
 	"time"
@@ -16,9 +18,10 @@ import (
 
 // CreateTables uses the models from models.go to create database tables
 func CreateTables(db *gorm.DB) {
-	Check(db.Migrator().AutoMigrate(&OrderBook{}))
-	Check(db.Migrator().AutoMigrate(&MarketData{}))
-	Check(db.Migrator().AutoMigrate(&HistoricalData{}))
+	lib.Check(db.Migrator().AutoMigrate(&L3OrderMessage{}))
+	lib.Check(db.Migrator().AutoMigrate(&OrderBookSnapshot{}))
+	lib.Check(db.Migrator().AutoMigrate(&MarketData{}))
+	lib.Check(db.Migrator().AutoMigrate(&HistoricalData{}))
 }
 
 // ConnectDB is a simple wrapper to open a GORM DB
@@ -29,7 +32,7 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 	// If using a SQLite DB
 	if dbType == "sqlite" {
 		// Just open the db
-		db, err := gorm.Open(sqlite.Open(conf.Name), &gorm.Config{})
+		db, err := gorm.Open(sqlite.Open(conf.Name), &gorm.Config{CreateBatchSize: 1000})
 		if err != nil {
 			log.Fatalln("Failed to open the database with reason:", err)
 		}
@@ -97,7 +100,33 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 // added to models.go, they must be placed in here by hand
 func DropTables(db *gorm.DB) {
 	// Drop tables in an order that won't invoke errors from foreign key constraints
-	Check(db.Migrator().DropTable(&MarketData{}))
-	Check(db.Migrator().DropTable(&OrderBook{}))
-	Check(db.Migrator().DropTable(&HistoricalData{}))
+	lib.Check(db.Migrator().DropTable(&L3OrderMessage{}))
+	lib.Check(db.Migrator().DropTable(&MarketData{}))
+	lib.Check(db.Migrator().DropTable(&OrderBookSnapshot{}))
+	lib.Check(db.Migrator().DropTable(&HistoricalData{}))
+}
+
+// ToOrderMessage converts a coinbase message into an L3 compatible order message
+func ToOrderMessage(msg coinbasepro.Message) L3OrderMessage {
+	return L3OrderMessage{
+		Type:          msg.Type,
+		ProductID:     msg.ProductID,
+		TradeID:       msg.TradeID,
+		OrderID:       msg.OrderID,
+		Sequence:      msg.Sequence,
+		MakerOrderID:  msg.MakerOrderID,
+		TakerOrderID:  msg.TakerOrderID,
+		Time:          time.Time(msg.Time),
+		RemainingSize: msg.RemainingSize,
+		NewSize:       msg.NewSize,
+		OldSize:       msg.OldSize,
+		Size:          msg.Size,
+		Price:         msg.Price,
+		Side:          msg.Side,
+		Reason:        msg.Reason,
+		OrderType:     msg.OrderType,
+		Funds:         msg.Funds,
+		UserID:        msg.UserID,
+		ProfileID:     msg.ProfileID,
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"lucrum/database"
 	"os"
 	"strconv"
 	"strings"
@@ -16,11 +17,11 @@ import (
 	"github.com/preichenberger/go-coinbasepro/v2"
 )
 
-// Max amount of rates you are allowed to request at a time
+// MaxHistoricRates is the max amount of rates you are allowed to request at a time
 // This is defined by the coinbase API spec at https://docs.pro.coinbase.com/#get-historic-rates
 const MaxHistoricRates time.Duration = 300
 
-// Helper to keep data neat
+// HistoricRateParams is as helper to keep data neat
 type HistoricRateParams struct {
 	Product     string
 	Start       time.Time
@@ -39,8 +40,8 @@ func (p HistoricRateParams) toParams() coinbasepro.GetHistoricRatesParams {
 }
 
 // Converts to a HistoricalData type
-func convertRates(rate coinbasepro.HistoricRate, params HistoricRateParams) (data HistoricalData) {
-	return HistoricalData{
+func convertRates(rate coinbasepro.HistoricRate, params HistoricRateParams) (data database.HistoricalData) {
+	return database.HistoricalData{
 		Time:        rate.Time,
 		Coin:        params.Product,
 		High:        rate.High,
@@ -52,7 +53,7 @@ func convertRates(rate coinbasepro.HistoricRate, params HistoricRateParams) (dat
 	}
 }
 
-// The list of possible granularities you can query
+// GetHistoricRatesGranularities is the list of possible granularities you can query
 // Defined by the Coinbase API at https://docs.pro.coinbase.com/#get-historic-rates
 func GetHistoricRatesGranularities() []int {
 	return []int{60, 300, 900, 3600, 21600, 86400}
@@ -114,11 +115,11 @@ func SaveHistoricalRates(
 			log.Println(err, params.Product)
 			return err
 		} else {
-			// We didn't get rate limited so we can slowly decrease the rate limit
+			// We didn't get rate limited, so we can slowly decrease the rate limit
 			rl.Decrease()
 		}
 
-		rates := make([]HistoricalData, 0, len(r))
+		rates := make([]database.HistoricalData, 0, len(r))
 		// Append the rates
 		// Is there a better way to do this?
 		for _, rate := range r {

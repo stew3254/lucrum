@@ -6,6 +6,8 @@ import (
 	"lucrum/config"
 	"os"
 
+	"gorm.io/gorm"
+
 	ws "github.com/gorilla/websocket"
 	"github.com/preichenberger/go-coinbasepro/v2"
 )
@@ -31,17 +33,23 @@ func Authenticate(conn *ws.Conn, conf config.Coinbase, msgs []coinbasepro.Messag
 	return nil
 }
 
-// WsMessageHandler takes care of calling the function that handles a message
-func WSMessageHandler(msgChannel chan coinbasepro.Message, handler func(msg coinbasepro.Message)) {
+// WSMessageHandler is a wrapper for simple handlers that only handle a message at a time
+func WSMessageHandler(
+	db *gorm.DB,
+	msgChannel chan coinbasepro.Message,
+	handler func(db *gorm.DB, msg coinbasepro.Message),
+) {
 	// Forever look for updates
 	var lastSequence int64
+	// Ignore the initial message sent saying we've started listening
+	<-msgChannel
 	for {
 		select {
 		case msg := <-msgChannel:
 			// Is this a mistake to assume it can't be 0?
 			// This fixes the bug with level2 channels not using sequences
 			if msg.Sequence == 0 || msg.Sequence > lastSequence {
-				handler(msg)
+				handler(db, msg)
 			}
 		}
 	}
@@ -84,9 +92,10 @@ func readMessages(
 func WSDispatcher(
 	ctx context.Context,
 	conf config.Config,
+	db *gorm.DB,
 	msgChannels []coinbasepro.MessageChannel,
 ) {
-	// This is used so we can receive user specific messages
+	// This is used, so we can receive user specific messages
 	// Due to how coinbase set up their websocket, it's not possible to tell
 	// with just one connection, but with at most 2
 	seenUser := false
@@ -111,21 +120,21 @@ func WSDispatcher(
 			// Figure out which function to spawn with corresponding channel
 			switch channel.Name {
 			case "heartbeat":
-				go WSMessageHandler(channels[channel.Name], HandleHeartbeat)
+				go WSMessageHandler(db, channels[channel.Name], HandleHeartbeat)
 			case "status":
-				go WSMessageHandler(channels[channel.Name], HandleStatus)
+				go WSMessageHandler(db, channels[channel.Name], HandleStatus)
 			case "ticker":
-				go WSMessageHandler(channels[channel.Name], HandleTicker)
+				go WSMessageHandler(db, channels[channel.Name], HandleTicker)
 			case "level2":
-				go WSMessageHandler(channels[channel.Name], HandleLevel2)
+				go L2Handler(db, channels[channel.Name])
 			case "user":
 				// In case multiple have been passed in, ignore them
 				if !seenUser {
 					seenUser = true
-					go WSMessageHandler(channels[channel.Name], HandleUser)
+					go UserHandler(db, channels[channel.Name])
 				}
 			case "matches":
-				go WSMessageHandler(channels[channel.Name], HandleMatches)
+				go WSMessageHandler(db, channels[channel.Name], HandleMatches)
 			case "full":
 				// Since full channel and user channel look the same,
 				// this is the only decent method of confirming they are different
@@ -135,10 +144,10 @@ func WSDispatcher(
 					delete(channels, channel.Name)
 					// Create a new dispatcher to explicitly handle this
 					newMsgChannels := []coinbasepro.MessageChannel{channel}
-					go WSDispatcher(ctx, conf, newMsgChannels)
+					go WSDispatcher(ctx, conf, db, newMsgChannels)
 				} else if !seenUser {
 					// Normal usage here
-					go WSMessageHandler(channels[channel.Name], HandleFull)
+					go L3Handler(db, channels[channel.Name], channel.ProductIds)
 				}
 			}
 		}
@@ -175,6 +184,9 @@ func WSDispatcher(
 	errChan := make(chan error, 1)
 	// Create a channel to signal that we are done
 	done := make(chan struct{}, 1)
+
+	// Send an initial message alerting the channel that we've started listening
+	msgChan <- coinbasepro.Message{Type: "lucrum_start"}
 
 	// Start the message reader
 	go readMessages(conn, msgChan, errChan, done)
@@ -243,6 +255,7 @@ func WSDispatcher(
 			if channel, ok := channels[msgType]; ok {
 				channel <- msg
 			}
+
 		// Something bad happened and it's time to die
 		case err := <-errChan:
 			log.Println(err)
