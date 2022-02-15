@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"encoding/json"
 	"github.com/stew3254/ratelimit"
+	"gorm.io/gorm/clause"
 	"log"
 	"lucrum/database"
 	"sync"
@@ -141,22 +142,25 @@ func obListToDB(l *list.List, db *gorm.DB, size int) {
 	// Convert the list to a slice
 	e := l.Front()
 	entries := make([]database.OrderBookSnapshot, size)
-	for i := 0; i < l.Len(); i++ {
-		entries[i%500] = e.Value.(database.OrderBookSnapshot)
-		e.Next()
-		// There are no entries left so add remainders and break out of the loop
-		if e == nil {
-			newEntries := make([]database.OrderBookSnapshot, i+1%500)
-			for j := 0; j < i; j++ {
-				newEntries[j] = entries[j]
+	for {
+		for i := 0; i < size; i++ {
+			// There are no entries left so add remainders and break out of the loop
+			if e == nil {
+				db.Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "order_id"}},
+					DoNothing: true,
+				}).Create(entries)
+				return
 			}
-			db.Create(newEntries)
-			return
+
+			entries[i] = e.Value.(database.OrderBookSnapshot)
+			e = e.Next()
 		}
 		// Add entries to the database
-		if i%size == 0 && i > 0 {
-			db.Create(entries)
-		}
+		db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "order_id"}},
+			DoNothing: true,
+		}).Create(entries)
 	}
 }
 
@@ -183,12 +187,13 @@ func L3Handler(
 	snapshot := getOrderBooks(client, rl, productIds)
 	// Add all entries to the database
 	for _, v := range snapshot {
-		obListToDB(v, db, 500)
+		obListToDB(v, db, 10000)
 	}
 
 	// Forever look for updates
 	var lastSequence int64
 	received := make(map[string]coinbasepro.Message)
+
 	for {
 		select {
 		case msg := <-msgChannel:
@@ -197,13 +202,14 @@ func L3Handler(
 				lastSequence = msg.Sequence - 1
 			}
 
+			// TODO add proper handling for out of order messages
 			// This accounts for gaps in the sequence
 			if msg.Sequence > lastSequence+1 {
 				// Add all entries to the database because we can't account for the gap that occurred
 				snapshot = getOrderBooks(client, rl, productIds)
 				// Add all entries to the database
 				for _, v := range snapshot {
-					obListToDB(v, db, 500)
+					obListToDB(v, db, 10000)
 				}
 			} else if msg.Sequence == lastSequence+1 {
 				// Update the sequence
@@ -219,12 +225,6 @@ func L3Handler(
 					// Add the message to the received map, so we can match with it later
 					received[msg.OrderID] = msg
 				case "open":
-					// Find the message in the received map
-					// recv := received[msg.OrderID]
-					// // We know the object was actually in the map
-					// if len(recv.OrderID) > 0 {
-					// }
-
 					// Note: If the size of received and remaining size of the open message aren't the same,
 					// then the order was partially filled
 
@@ -246,18 +246,7 @@ func L3Handler(
 
 					// Add the entry to the book
 					snapshot[msg.ProductID].PushFront(entry)
-
-					log.Println("Added:", entry.OrderID)
 				case "done":
-					// Find the message in the received map and remove it
-					// recv := received[msg.OrderID]
-					// // We know the object was actually in the map
-					// if len(recv.OrderID) > 0 {
-					// }
-
-					// Note: If the size of received and remaining size of the open message aren't the same,
-					// then the order was partially filled
-
 					// Remove the received message since this has been filled
 					delete(received, msg.OrderID)
 
@@ -267,12 +256,11 @@ func L3Handler(
 						if e.Value.(database.OrderBookSnapshot).OrderID == msg.OrderID {
 							// Remove the entry
 							entries.Remove(e)
-							log.Println("Removed:", e.Value.(database.OrderBookSnapshot).OrderID)
 							break
 						}
 					}
 				case "match":
-					// log.Println(msg)
+					log.Println(msg)
 				case "changed":
 					// log.Println(msg)
 				case "activate":

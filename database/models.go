@@ -72,10 +72,10 @@ type HistoricalData struct {
 type OrderBookSnapshot struct {
 	Id        int64     `gorm:"type:int; primaryKey; not null"`
 	ProductId string    `gorm:"type:text; not null"`
-	Sequence  int64     `gorm:type:int; not null`
+	Sequence  int64     `gorm:"type:int; not null"`
 	IsAsk     bool      `gorm:"type:boolean; not null"`
 	Time      time.Time `gorm:"type:text; not null"`
-	Price     string    `gorm:"type:text; not null" json:"price"`
-	Size      string    `gorm:"type:text; not null" json:"size"`
-	OrderID   string    `gorm:"type:text; not null" json:"order_id"`
+	Price     string    `gorm:"type:text; not null"`
+	Size      string    `gorm:"type:text; not null"`
+	OrderID   string    `gorm:"type:text; not null; unique"`
 }

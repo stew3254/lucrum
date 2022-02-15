@@ -212,8 +212,8 @@ func WSDispatcher(
 				// Correct the type
 				msgType = "matches"
 			case "match":
-				// Correct the type (This means the full handler will no longer get match messages)
-				msgType = "matches"
+				// Since there is an overload here, do a manual check later
+				msgType = "match"
 			case "received":
 				// Correct the type
 				if seenUser {
@@ -251,9 +251,19 @@ func WSDispatcher(
 				}
 			}
 
-			// If the channel exists, send the message over to the handler
-			if channel, ok := channels[msgType]; ok {
-				channel <- msg
+			if msgType == "match" {
+				// In the overloaded case where matches need to go to 2 places, handle this explicitly
+				if channel, ok := channels["full"]; ok {
+					channel <- msg
+				}
+				if channel, ok := channels["matches"]; ok {
+					channel <- msg
+				}
+			} else {
+				// If the channel exists, send the message over to the handler
+				if channel, ok := channels[msgType]; ok {
+					channel <- msg
+				}
 			}
 
 		// Something bad happened and it's time to die
