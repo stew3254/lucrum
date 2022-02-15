@@ -256,14 +256,28 @@ func L3Handler(
 						if e.Value.(database.OrderBookSnapshot).OrderID == msg.OrderID {
 							// Remove the entry
 							entries.Remove(e)
+							log.Println("Removed:", e.Value.(database.OrderBookSnapshot).OrderID)
 							break
 						}
 					}
 				case "match":
-					log.Println(msg)
-				case "changed":
-					// log.Println(msg)
+					// Do nothing for now. Done takes care of removing the received messages and removing
+					// from the order book
+				case "change":
+					// Look through the order book to see if it's changing a resting order
+					entries := snapshot[msg.ProductID]
+					for e := entries.Front(); e != nil; e = e.Next() {
+						v := e.Value.(database.OrderBookSnapshot)
+						if v.OrderID == msg.OrderID {
+							// Update the new size
+							v.Size = msg.NewSize
+							// If we care about limit vs market price check here
+							break
+						}
+					}
 				case "activate":
+					// Do nothing for now. We don't care about stop orders, and they don't trigger the book
+					// through this type of message
 					// log.Println(msg)
 				}
 			}
