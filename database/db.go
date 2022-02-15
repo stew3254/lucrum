@@ -32,7 +32,7 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 	// If using a SQLite DB
 	if dbType == "sqlite" {
 		// Just open the db
-		db, err := gorm.Open(sqlite.Open(conf.Name), &gorm.Config{CreateBatchSize: 1000})
+		db, err := gorm.Open(sqlite.Open(conf.Name), &gorm.Config{CreateBatchSize: 500})
 		if err != nil {
 			log.Fatalln("Failed to open the database with reason:", err)
 		}
