@@ -4,16 +4,16 @@ import (
 	"container/list"
 	"encoding/json"
 	"github.com/stew3254/ratelimit"
-	"gorm.io/gorm/clause"
 	"log"
 	"lucrum/database"
-	"sync"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/preichenberger/go-coinbasepro/v2"
 )
+
+var Books map[string]Book
 
 // Handle status messages
 func HandleStatus(db *gorm.DB, msg coinbasepro.Message) {
@@ -69,99 +69,92 @@ func L2Handler(
 	}
 }
 
-func getOrderBooks(
-	client *coinbasepro.Client,
-	rl *ratelimit.RateLimiter,
-	productIds []string,
-) (snapshot map[string]*list.List) {
-	wg := &sync.WaitGroup{}
-	books := make([]coinbasepro.Book, 0)
-	for _, product := range productIds {
-		// Wait for each order book
-		wg.Add(1)
-		go func(product string) {
-			rl.Lock()
-			book, err := client.GetBook(product, 3)
-			rl.Unlock()
-			for err != nil && err.Error() == "Public rate limit exceeded" {
-				// Bump up the limit
-				rl.Increase()
-				// Be brief on the critical section (although in 1 thread right now this doesn't matter)
-				rl.Lock()
-				// Get the historic rates
-				book, err = client.GetBook(product, 3)
-				rl.Unlock()
+// UpdateOrderBook handles interpreting messages from the full channel
+// and applying them to the internal order book
+func UpdateOrderBook(book *Book, msg coinbasepro.Message) {
+	// Ignore old messages
+	if msg.Sequence <= book.Sequence {
+		return
+	} else if msg.Sequence > book.Sequence+1 {
+		// The messages are too new, so we missed something. Get a snapshot from the API
+	}
+	// Handle based on the message type
+	switch msg.Type {
+	case "open":
+		// Create the order book snapshot
+		now := time.Now()
+		entry := database.OrderBookSnapshot{
+			ProductId: msg.ProductID,
+			Sequence:  msg.Sequence,
+			Time:      now,
+			Price:     msg.Price,
+			Size:      msg.RemainingSize,
+			OrderID:   msg.OrderID,
+		}
+
+		// Add the order to the front of the book
+		if msg.Side == "buy" {
+			entry.IsAsk = false
+			book.Buys.PushFront(entry)
+		} else {
+			entry.IsAsk = true
+			book.Sells.PushFront(entry)
+		}
+	case "done":
+		// Get the entries we care about
+		var entries *list.List
+		if msg.Side == "buy" {
+			entries = book.Buys
+		} else {
+			entries = book.Sells
+		}
+
+		// Remove the entry from the book if it exists
+		for e := entries.Front(); e != nil; e = e.Next() {
+			if e.Value.(database.OrderBookSnapshot).OrderID == msg.OrderID {
+				// Remove the entry
+				entries.Remove(e)
+				break
 			}
-			if err == nil {
-				rl.Decrease()
-			} else {
-				log.Fatalln(err)
+		}
+	case "change":
+		// Get the entries we care about
+		var entries *list.List
+		if msg.Side == "buy" {
+			entries = book.Buys
+		} else {
+			entries = book.Sells
+		}
+
+		// Look through the order book to see if it's changing a resting order
+		for e := entries.Front(); e != nil; e = e.Next() {
+			v := e.Value.(database.OrderBookSnapshot)
+			if v.OrderID == msg.OrderID {
+				// Update the new size
+				v.Size = msg.NewSize
+				break
 			}
-			rl.Lock()
-			books = append(books, book)
-			rl.Unlock()
-			wg.Done()
-		}(product)
+			// Update the value again
+			e.Value = v
+		}
 	}
 
-	// Wait for all the order books to be populated
-	wg.Wait()
-
-	// Create a slice of snapshot entries to add to the database
-	now := time.Now()
-	snapshot = make(map[string]*list.List)
-	for i := 0; i < len(productIds); i++ {
-		// Create the function to create a snapshot
-		toSnapshot := func(isAsk bool, entry coinbasepro.BookEntry) database.OrderBookSnapshot {
-			return database.OrderBookSnapshot{
-				ProductId: productIds[i],
-				Sequence:  books[i].Sequence,
-				IsAsk:     isAsk,
-				Time:      now,
-				Price:     entry.Price,
-				Size:      entry.Size,
-				OrderID:   entry.OrderID,
-			}
-		}
-		// Add all the asks and bids for this coin to the slice
-		entries := list.New()
-		for _, ask := range books[i].Asks {
-			entries.PushFront(toSnapshot(true, ask))
-		}
-		for _, bid := range books[i].Bids {
-			entries.PushFront(toSnapshot(false, bid))
-		}
-		// Add the list to the map
-		snapshot[productIds[i]] = entries
-	}
-	return snapshot
+	// Update the book's sequence number, so we know what the last message seen is
+	book.Sequence = msg.Sequence
 }
 
-// Gradually converts an order book list to a slice and adds it to the database
-func obListToDB(l *list.List, db *gorm.DB, size int) {
-	// Convert the list to a slice
-	e := l.Front()
-	entries := make([]database.OrderBookSnapshot, size)
-	for {
-		for i := 0; i < size; i++ {
-			// There are no entries left so add remainders and break out of the loop
-			if e == nil {
-				db.Clauses(clause.OnConflict{
-					Columns:   []clause.Column{{Name: "order_id"}},
-					DoNothing: true,
-				}).Create(entries)
-				return
-			}
-
-			entries[i] = e.Value.(database.OrderBookSnapshot)
-			e = e.Next()
+// SaveOrderBook writes out the book to the database
+func SaveOrderBook(book *Book, db *gorm.DB) {
+	update := func(l *list.List, sequence int64) {
+		for e := l.Front(); e != nil; e = e.Next() {
+			v := e.Value.(database.OrderBookSnapshot)
+			v.Sequence = sequence
+			e.Value = v
 		}
-		// Add entries to the database
-		db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "order_id"}},
-			DoNothing: true,
-		}).Create(entries)
+		obListToDB(l, db, 10000)
 	}
+	update(book.Buys, book.Sequence)
+	update(book.Sells, book.Sequence)
 }
 
 // L3Handler handles level 3 order book data
@@ -184,16 +177,15 @@ func L3Handler(
 	)
 
 	// Get the order books
-	snapshot := getOrderBooks(client, rl, productIds)
+	books := getOrderBooks(client, rl, productIds)
 	// Add all entries to the database
-	for _, v := range snapshot {
-		obListToDB(v, db, 10000)
+	for _, book := range books {
+		obListToDB(book.Buys, db, 10000)
+		obListToDB(book.Sells, db, 10000)
 	}
 
-	// Forever look for updates
+	// Forever look for incoming messages
 	var lastSequence int64
-	received := make(map[string]coinbasepro.Message)
-
 	for {
 		select {
 		case msg := <-msgChannel:
@@ -206,10 +198,11 @@ func L3Handler(
 			// This accounts for gaps in the sequence
 			if msg.Sequence > lastSequence+1 {
 				// Add all entries to the database because we can't account for the gap that occurred
-				snapshot = getOrderBooks(client, rl, productIds)
+				books = getOrderBooks(client, rl, productIds)
 				// Add all entries to the database
-				for _, v := range snapshot {
-					obListToDB(v, db, 10000)
+				for _, book := range books {
+					obListToDB(book.Buys, db, 10000)
+					obListToDB(book.Sells, db, 10000)
 				}
 			} else if msg.Sequence == lastSequence+1 {
 				// Update the sequence
@@ -219,66 +212,16 @@ func L3Handler(
 				m := database.ToOrderMessage(msg)
 				db.Create(&m)
 
-				// Handle based on the message type
+				// Update the order book
+				UpdateOrderBook(books[msg.ProductID], msg)
+
 				switch msg.Type {
 				case "received":
-					// Add the message to the received map, so we can match with it later
-					received[msg.OrderID] = msg
 				case "open":
-					// Note: If the size of received and remaining size of the open message aren't the same,
-					// then the order was partially filled
-
-					// Create the order book snapshot
-					now := time.Now()
-					entry := database.OrderBookSnapshot{
-						ProductId: msg.ProductID,
-						Sequence:  msg.Sequence,
-						Time:      now,
-						Price:     msg.Price,
-						Size:      msg.RemainingSize,
-						OrderID:   msg.OrderID,
-					}
-					if msg.Side == "buy" {
-						entry.IsAsk = false
-					} else {
-						entry.IsAsk = true
-					}
-
-					// Add the entry to the book
-					snapshot[msg.ProductID].PushFront(entry)
 				case "done":
-					// Remove the received message since this has been filled
-					delete(received, msg.OrderID)
-
-					// Find the message on the order book if it's there and delete it
-					entries := snapshot[msg.ProductID]
-					for e := entries.Front(); e != nil; e = e.Next() {
-						if e.Value.(database.OrderBookSnapshot).OrderID == msg.OrderID {
-							// Remove the entry
-							entries.Remove(e)
-							log.Println("Removed:", e.Value.(database.OrderBookSnapshot).OrderID)
-							break
-						}
-					}
 				case "match":
-					// Do nothing for now. Done takes care of removing the received messages and removing
-					// from the order book
 				case "change":
-					// Look through the order book to see if it's changing a resting order
-					entries := snapshot[msg.ProductID]
-					for e := entries.Front(); e != nil; e = e.Next() {
-						v := e.Value.(database.OrderBookSnapshot)
-						if v.OrderID == msg.OrderID {
-							// Update the new size
-							v.Size = msg.NewSize
-							// If we care about limit vs market price check here
-							break
-						}
-					}
 				case "activate":
-					// Do nothing for now. We don't care about stop orders, and they don't trigger the book
-					// through this type of message
-					// log.Println(msg)
 				}
 			}
 			// Simply ignore old messages if this somehow ever occurred
