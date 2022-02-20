@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/list"
 	"context"
 	"log"
 	"lucrum/config"
@@ -9,6 +10,7 @@ import (
 	"lucrum/websocket"
 	"os"
 	"os/signal"
+	"sort"
 	"syscall"
 	"time"
 
@@ -23,14 +25,102 @@ var DB *gorm.DB
 // Used for testing stuff with the bot for now
 // I'll fill this in as I want to test stuff
 func testingStuff(client *coinbasepro.Client, conf config.Config) {
-	book, err := client.GetBook("BTC-USD", 3)
-	if err != nil {
-		log.Fatalln(err)
+	// Get the sequence ids
+	sequences := make([]int64, 0, 2)
+	DB.Distinct("sequence").Table("order_book_snapshots").Scan(&sequences)
+	tempBooks := make([][]database.OrderBookSnapshot, 2)
+	books := make([]*websocket.Book, 2)
+	// Get both order books
+	for i := 0; i < 2; i++ {
+		DB.Where("sequence = ?", sequences[i]).Find(&tempBooks[i])
+		books[i] = &websocket.Book{
+			Sequence: tempBooks[i][0].Sequence,
+			Buys:     list.New(),
+			Sells:    list.New(),
+		}
+
+		// Make real books
+		for _, book := range tempBooks[i] {
+			if book.IsAsk {
+				books[i].Sells.PushBack(book)
+			} else {
+				books[i].Buys.PushBack(book)
+			}
+		}
 	}
-	for _, ask := range book.Asks {
-		log.Printf("Price: %s, Size: %s, #Orders: %d, ID: %s", ask.Price, ask.Size, ask.NumberOfOrders, ask.OrderID)
+	// Get all messages
+	var messages []database.L3OrderMessage
+	DB.Find(&messages)
+
+	// Simulate the order book
+	for _, msg := range messages[:len(messages)-1] {
+		websocket.UpdateOrderBook(books[0], database.FromOrderMessage(msg))
 	}
-	log.Println(book.Sequence)
+
+	// See if they're equal
+	if books[0].Sequence != books[1].Sequence {
+		log.Fatalln("Failed: Sequences don't match")
+	}
+	if books[0].Buys.Len() != books[1].Buys.Len() || books[0].Sells.Len() != books[1].Sells.Len() {
+		log.Fatalln("Failed: Book lengths don't match")
+	}
+
+	ids1 := make([]string, books[0].Buys.Len())
+	ids2 := make([]string, books[0].Buys.Len())
+	e1 := books[0].Buys.Front()
+	e2 := books[1].Buys.Front()
+	for i := 0; i < books[0].Buys.Len(); i++ {
+		v1 := e1.Value.(database.OrderBookSnapshot)
+		v2 := e2.Value.(database.OrderBookSnapshot)
+		ids1[i] = v1.OrderID
+		ids2[i] = v2.OrderID
+		e1 = e1.Next()
+		e2 = e2.Next()
+	}
+
+	// Sort the slices
+	sort.Slice(ids1, func(i, j int) bool {
+		return ids1[i] < ids1[j]
+	})
+	sort.Slice(ids2, func(i, j int) bool {
+		return ids2[i] < ids2[j]
+	})
+
+	// See if they're the same
+	for i := 0; i < len(ids1); i++ {
+		if ids1[i] != ids2[i] {
+			log.Println(ids1[i], ids2[i])
+		}
+	}
+
+	ids1 = make([]string, books[0].Sells.Len())
+	ids2 = make([]string, books[0].Sells.Len())
+	e1 = books[0].Sells.Front()
+	e2 = books[1].Sells.Front()
+	for i := 0; i < books[0].Sells.Len(); i++ {
+		v1 := e1.Value.(database.OrderBookSnapshot)
+		v2 := e2.Value.(database.OrderBookSnapshot)
+		ids1[i] = v1.OrderID
+		ids2[i] = v2.OrderID
+		e1 = e1.Next()
+		e2 = e2.Next()
+	}
+
+	// Sort the slices
+	sort.Slice(ids1, func(i, j int) bool {
+		return ids1[i] < ids1[j]
+	})
+	sort.Slice(ids2, func(i, j int) bool {
+		return ids2[i] < ids2[j]
+	})
+
+	// See if they're the same
+	for i := 0; i < len(ids1); i++ {
+		if ids1[i] != ids2[i] {
+			log.Println(ids1[i], ids2[i])
+		}
+	}
+	log.Println("They're the same")
 }
 
 // Used to actually run the bot

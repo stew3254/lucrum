@@ -42,7 +42,7 @@ func (p HistoricRateParams) toParams() coinbasepro.GetHistoricRatesParams {
 // Converts to a HistoricalData type
 func convertRates(rate coinbasepro.HistoricRate, params HistoricRateParams) (data database.HistoricalData) {
 	return database.HistoricalData{
-		Time:        rate.Time,
+		Time:        rate.Time.UnixMicro(),
 		ProductId:   params.Product,
 		High:        rate.High,
 		Low:         rate.Low,

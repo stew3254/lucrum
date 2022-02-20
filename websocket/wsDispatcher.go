@@ -95,6 +95,14 @@ func WSDispatcher(
 	db *gorm.DB,
 	msgChannels []coinbasepro.MessageChannel,
 ) {
+	// Get bot configuration
+	var botConf config.Bot
+	if conf.Conf.IsSandbox {
+		botConf = conf.Conf.Sandbox
+	} else {
+		botConf = conf.Conf.Production
+	}
+
 	// This is used, so we can receive user specific messages
 	// Due to how coinbase set up their websocket, it's not possible to tell
 	// with just one connection, but with at most 2
@@ -147,18 +155,10 @@ func WSDispatcher(
 					go WSDispatcher(ctx, conf, db, newMsgChannels)
 				} else if !seenUser {
 					// Normal usage here
-					go L3Handler(db, channels[channel.Name], channel.ProductIds)
+					go L3Handler(botConf, db, channels[channel.Name], channel.ProductIds)
 				}
 			}
 		}
-	}
-
-	// Get bot configuration
-	var botConf config.Bot
-	if conf.Conf.IsSandbox {
-		botConf = conf.Conf.Sandbox
-	} else {
-		botConf = conf.Conf.Production
 	}
 
 	// Create a websocket to coinbase

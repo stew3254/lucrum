@@ -20,7 +20,7 @@ import (
 func CreateTables(db *gorm.DB) {
 	lib.Check(db.Migrator().AutoMigrate(&L3OrderMessage{}))
 	lib.Check(db.Migrator().AutoMigrate(&OrderBookSnapshot{}))
-	lib.Check(db.Migrator().AutoMigrate(&MarketData{}))
+	lib.Check(db.Migrator().AutoMigrate(&Transaction{}))
 	lib.Check(db.Migrator().AutoMigrate(&HistoricalData{}))
 }
 
@@ -101,7 +101,7 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 func DropTables(db *gorm.DB) {
 	// Drop tables in an order that won't invoke errors from foreign key constraints
 	lib.Check(db.Migrator().DropTable(&L3OrderMessage{}))
-	lib.Check(db.Migrator().DropTable(&MarketData{}))
+	lib.Check(db.Migrator().DropTable(&Transaction{}))
 	lib.Check(db.Migrator().DropTable(&OrderBookSnapshot{}))
 	lib.Check(db.Migrator().DropTable(&HistoricalData{}))
 }
@@ -116,7 +116,32 @@ func ToOrderMessage(msg coinbasepro.Message) L3OrderMessage {
 		Sequence:      msg.Sequence,
 		MakerOrderID:  msg.MakerOrderID,
 		TakerOrderID:  msg.TakerOrderID,
-		Time:          time.Time(msg.Time),
+		Time:          msg.Time.Time().UnixMicro(),
+		RemainingSize: msg.RemainingSize,
+		NewSize:       msg.NewSize,
+		OldSize:       msg.OldSize,
+		Size:          msg.Size,
+		Price:         msg.Price,
+		Side:          msg.Side,
+		Reason:        msg.Reason,
+		OrderType:     msg.OrderType,
+		Funds:         msg.Funds,
+		UserID:        msg.UserID,
+		ProfileID:     msg.ProfileID,
+	}
+}
+
+// FromOrderMessage converts an L3 message into a coinbase one
+func FromOrderMessage(msg L3OrderMessage) coinbasepro.Message {
+	return coinbasepro.Message{
+		Type:          msg.Type,
+		ProductID:     msg.ProductID,
+		TradeID:       msg.TradeID,
+		OrderID:       msg.OrderID,
+		Sequence:      msg.Sequence,
+		MakerOrderID:  msg.MakerOrderID,
+		TakerOrderID:  msg.TakerOrderID,
+		Time:          coinbasepro.Time(time.UnixMicro(msg.Time)),
 		RemainingSize: msg.RemainingSize,
 		NewSize:       msg.NewSize,
 		OldSize:       msg.OldSize,

@@ -5,15 +5,16 @@ import (
 	"encoding/json"
 	"github.com/stew3254/ratelimit"
 	"log"
+	"lucrum/config"
 	"lucrum/database"
+	"net/http"
+	"os"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/preichenberger/go-coinbasepro/v2"
 )
-
-var Books map[string]Book
 
 // Handle status messages
 func HandleStatus(db *gorm.DB, msg coinbasepro.Message) {
@@ -69,104 +70,27 @@ func L2Handler(
 	}
 }
 
-// UpdateOrderBook handles interpreting messages from the full channel
-// and applying them to the internal order book
-func UpdateOrderBook(book *Book, msg coinbasepro.Message) {
-	// Ignore old messages
-	if msg.Sequence <= book.Sequence {
-		return
-	} else if msg.Sequence > book.Sequence+1 {
-		// The messages are too new, so we missed something. Get a snapshot from the API
-	}
-	// Handle based on the message type
-	switch msg.Type {
-	case "open":
-		// Create the order book snapshot
-		now := time.Now()
-		entry := database.OrderBookSnapshot{
-			ProductId: msg.ProductID,
-			Sequence:  msg.Sequence,
-			Time:      now,
-			Price:     msg.Price,
-			Size:      msg.RemainingSize,
-			OrderID:   msg.OrderID,
-		}
-
-		// Add the order to the front of the book
-		if msg.Side == "buy" {
-			entry.IsAsk = false
-			book.Buys.PushFront(entry)
-		} else {
-			entry.IsAsk = true
-			book.Sells.PushFront(entry)
-		}
-	case "done":
-		// Get the entries we care about
-		var entries *list.List
-		if msg.Side == "buy" {
-			entries = book.Buys
-		} else {
-			entries = book.Sells
-		}
-
-		// Remove the entry from the book if it exists
-		for e := entries.Front(); e != nil; e = e.Next() {
-			if e.Value.(database.OrderBookSnapshot).OrderID == msg.OrderID {
-				// Remove the entry
-				entries.Remove(e)
-				break
-			}
-		}
-	case "change":
-		// Get the entries we care about
-		var entries *list.List
-		if msg.Side == "buy" {
-			entries = book.Buys
-		} else {
-			entries = book.Sells
-		}
-
-		// Look through the order book to see if it's changing a resting order
-		for e := entries.Front(); e != nil; e = e.Next() {
-			v := e.Value.(database.OrderBookSnapshot)
-			if v.OrderID == msg.OrderID {
-				// Update the new size
-				v.Size = msg.NewSize
-				break
-			}
-			// Update the value again
-			e.Value = v
-		}
-	}
-
-	// Update the book's sequence number, so we know what the last message seen is
-	book.Sequence = msg.Sequence
-}
-
-// SaveOrderBook writes out the book to the database
-func SaveOrderBook(book *Book, db *gorm.DB) {
-	update := func(l *list.List, sequence int64) {
-		for e := l.Front(); e != nil; e = e.Next() {
-			v := e.Value.(database.OrderBookSnapshot)
-			v.Sequence = sequence
-			e.Value = v
-		}
-		obListToDB(l, db, 10000)
-	}
-	update(book.Buys, book.Sequence)
-	update(book.Sells, book.Sequence)
-}
-
 // L3Handler handles level 3 order book data
 func L3Handler(
+	botConf config.Bot,
 	db *gorm.DB,
 	msgChannel chan coinbasepro.Message,
 	productIds []string,
 ) {
 	// Look for the first message saying we're listening for messages
 	<-msgChannel
+
 	// Now we can get the current state of the order books
-	client := coinbasepro.NewClient()
+	client := &coinbasepro.Client{
+		BaseURL:    botConf.Coinbase.URL,
+		Key:        botConf.Coinbase.Key,
+		Secret:     botConf.Coinbase.Secret,
+		Passphrase: botConf.Coinbase.Passphrase,
+		HTTPClient: &http.Client{
+			Timeout: 60 * time.Second,
+		},
+		RetryCount: 3,
+	}
 
 	// Create a RateLimiter to not overwhelm the API
 	rl := ratelimit.NewRateLimiter(
@@ -177,52 +101,141 @@ func L3Handler(
 	)
 
 	// Get the order books
-	books := getOrderBooks(client, rl, productIds)
+	Books = GetOrderBooks(client, rl, productIds)
 	// Add all entries to the database
-	for _, book := range books {
-		obListToDB(book.Buys, db, 10000)
-		obListToDB(book.Sells, db, 10000)
+	Books.Save(db)
+
+	// Initialize transactions
+	openTransactions := NewTransactions(productIds)
+	doneTransactions := NewTransactions(productIds)
+
+	// Add transactions from the order book
+	for _, productId := range productIds {
+		book := Books.Get(productId)
+		addTransactions := func(l *list.List) {
+			for e := l.Front(); e != nil; e = e.Next() {
+				v := e.Value.(database.OrderBookSnapshot)
+				transaction := &database.Transaction{
+					OrderID:       v.OrderID,
+					ProductId:     v.ProductId,
+					Time:          v.Time,
+					Price:         v.Price,
+					Side:          "buy",
+					Size:          v.Size,
+					AddedToBook:   true,
+					RemainingSize: v.Size,
+				}
+				openTransactions.Set(v.ProductId, v.OrderID, transaction)
+			}
+		}
+		addTransactions(book.Buys)
+		addTransactions(book.Sells)
 	}
 
+	// Periodically done transactions to the db
+	// go func(transactions *Transactions, db *gorm.DB) {
+	// 	// Once a minute flush done transactions to the db
+	// 	time.Sleep(60 * time.Second)
+	// 	for _, productId := range productIds {
+	// 		tmp := transactions.Pop(productId)
+	// 		db.Create(&tmp)
+	// 	}
+	// }(doneTransactions, db)
+
+	count := 0
+	// Initialize sequences
+	lastSequence := make(map[string]int64)
+	for _, productId := range productIds {
+		lastSequence[productId] = Books.Get(productId).Sequence
+	}
 	// Forever look for incoming messages
-	var lastSequence int64
 	for {
 		select {
 		case msg := <-msgChannel:
-			// Make sure to set the initial sequence on start
-			if lastSequence == 0 {
-				lastSequence = msg.Sequence - 1
-			}
-
 			// TODO add proper handling for out of order messages
 			// This accounts for gaps in the sequence
-			if msg.Sequence > lastSequence+1 {
+			if msg.Sequence > lastSequence[msg.ProductID]+1 {
 				// Add all entries to the database because we can't account for the gap that occurred
-				books = getOrderBooks(client, rl, productIds)
+				Books = GetOrderBooks(client, rl, productIds)
 				// Add all entries to the database
-				for _, book := range books {
-					obListToDB(book.Buys, db, 10000)
-					obListToDB(book.Sells, db, 10000)
-				}
-			} else if msg.Sequence == lastSequence+1 {
+				Books.Save(db)
+			} else if msg.Sequence == lastSequence[msg.ProductID]+1 {
 				// Update the sequence
-				lastSequence = msg.Sequence
+				lastSequence[msg.ProductID] = msg.Sequence
 
 				// Save the message to the database
 				m := database.ToOrderMessage(msg)
 				db.Create(&m)
 
 				// Update the order book
-				UpdateOrderBook(books[msg.ProductID], msg)
+				UpdateOrderBook(Books.Get(msg.ProductID), msg)
 
 				switch msg.Type {
 				case "received":
+					// Create the new transaction
+					openTransactions.Set(msg.ProductID, msg.OrderID, &database.Transaction{
+						OrderID:      msg.OrderID,
+						ProductId:    msg.ProductID,
+						Time:         msg.Time.Time().UnixMicro(),
+						Price:        msg.Price,
+						Side:         msg.Side,
+						Size:         msg.Size,
+						Funds:        msg.Funds,
+						OrderType:    msg.OrderType,
+						AddedToBook:  false,
+						OrderChanged: false,
+					})
 				case "open":
+					// Update the old transaction
+					openTransactions.Update(msg.ProductID, msg.OrderID,
+						func(transaction *database.Transaction) {
+							transaction.AddedToBook = true
+							transaction.RemainingSize = msg.RemainingSize
+						})
 				case "done":
+					// Update the old transaction
+					t := openTransactions.Get(msg.ProductID, msg.OrderID)
+					t.ClosedAt = msg.Time.Time().UnixMicro()
+					t.Reason = msg.Reason
+					// Add it to done transactions
+					doneTransactions.Set(msg.ProductID, msg.OrderID, t)
+					// Remove it from the open transactions
+					openTransactions.Remove(msg.ProductID, msg.OrderID)
 				case "match":
+					openTransactions.Update(msg.ProductID, msg.TakerOrderID,
+						func(transaction *database.Transaction) {
+							transaction.MatchId = msg.MakerOrderID
+						})
+					openTransactions.Update(msg.ProductID, msg.MakerOrderID,
+						func(transaction *database.Transaction) {
+							transaction.MatchId = msg.TakerOrderID
+						})
 				case "change":
+					openTransactions.Update(msg.ProductID, msg.OrderID,
+						func(transaction *database.Transaction) {
+							transaction.OrderChanged = true
+							transaction.NewSize = msg.NewSize
+						})
 				case "activate":
+					// We can't actually do anything with this
 				}
+
+				// DEBUG
+				if count%1000 == 0 {
+					log.Println(count / 1000)
+				}
+
+				if count == 100000 {
+					// Flush out all the transactions that have occurred
+					for _, productId := range productIds {
+						tmp := openTransactions.Pop(productId)
+						db.Create(&tmp)
+						tmp = doneTransactions.Pop(productId)
+						db.Create(&tmp)
+					}
+					os.Exit(0)
+				}
+				count++
 			}
 			// Simply ignore old messages if this somehow ever occurred
 		}
