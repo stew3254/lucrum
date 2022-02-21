@@ -155,7 +155,7 @@ func WSDispatcher(
 					go WSDispatcher(ctx, conf, db, newMsgChannels)
 				} else if !seenUser {
 					// Normal usage here
-					go L3Handler(botConf, db, channels[channel.Name], channel.ProductIds)
+					go L3Handler(botConf, conf.Conf.Ws, db, channels[channel.Name], channel.ProductIds)
 				}
 			}
 		}

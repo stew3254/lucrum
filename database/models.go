@@ -38,14 +38,15 @@ type HistoricalData struct {
 
 // OrderBookSnapshot contains entries to build the state of the book at a specific time
 type OrderBookSnapshot struct {
-	Id        int64  `gorm:"type:int; primaryKey; not null"`
-	ProductId string `gorm:"type:text; not null"`
-	Sequence  int64  `gorm:"type:int; not null"`
-	IsAsk     bool   `gorm:"type:boolean; not null"`
-	Time      int64  `gorm:"type:int; not null"`
-	Price     string `gorm:"type:text; not null"`
-	Size      string `gorm:"type:text; not null"`
-	OrderID   string `gorm:"type:text; not null"`
+	Id            int64  `gorm:"type:int; primaryKey; not null"`
+	ProductId     string `gorm:"type:text; not null"`
+	FirstSequence int64  `gorm:"type:int; not null"`
+	LastSequence  int64  `gorm:"type:int; not null"`
+	IsAsk         bool   `gorm:"type:boolean; not null"`
+	Time          int64  `gorm:"type:int; not null"`
+	Price         string `gorm:"type:text; not null"`
+	Size          string `gorm:"type:text; not null"`
+	OrderID       string `gorm:"type:text; not null"`
 }
 
 type Transaction struct {

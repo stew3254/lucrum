@@ -1,14 +1,12 @@
 package websocket
 
 import (
-	"container/list"
 	"encoding/json"
 	"github.com/stew3254/ratelimit"
 	"log"
 	"lucrum/config"
 	"lucrum/database"
 	"net/http"
-	"os"
 	"time"
 
 	"gorm.io/gorm"
@@ -73,6 +71,7 @@ func L2Handler(
 // L3Handler handles level 3 order book data
 func L3Handler(
 	botConf config.Bot,
+	wsConf config.Websocket,
 	db *gorm.DB,
 	msgChannel chan coinbasepro.Message,
 	productIds []string,
@@ -103,46 +102,16 @@ func L3Handler(
 	// Get the order books
 	Books = GetOrderBooks(client, rl, productIds)
 	// Add all entries to the database
-	Books.Save(db)
+	go Books.Save(db)
 
 	// Initialize transactions
-	openTransactions := NewTransactions(productIds)
-	doneTransactions := NewTransactions(productIds)
-
-	// Add transactions from the order book
-	for _, productId := range productIds {
-		book := Books.Get(productId)
-		addTransactions := func(l *list.List) {
-			for e := l.Front(); e != nil; e = e.Next() {
-				v := e.Value.(database.OrderBookSnapshot)
-				transaction := &database.Transaction{
-					OrderID:       v.OrderID,
-					ProductId:     v.ProductId,
-					Time:          v.Time,
-					Price:         v.Price,
-					Side:          "buy",
-					Size:          v.Size,
-					AddedToBook:   true,
-					RemainingSize: v.Size,
-				}
-				openTransactions.Set(v.ProductId, v.OrderID, transaction)
-			}
-		}
-		addTransactions(book.Buys)
-		addTransactions(book.Sells)
+	var openTransactions *Transactions
+	var doneTransactions *Transactions
+	if wsConf.StoreTransactions {
+		openTransactions = NewTransactions(productIds, Books)
+		doneTransactions = NewTransactions(productIds, nil)
 	}
 
-	// Periodically done transactions to the db
-	// go func(transactions *Transactions, db *gorm.DB) {
-	// 	// Once a minute flush done transactions to the db
-	// 	time.Sleep(60 * time.Second)
-	// 	for _, productId := range productIds {
-	// 		tmp := transactions.Pop(productId)
-	// 		db.Create(&tmp)
-	// 	}
-	// }(doneTransactions, db)
-
-	count := 0
 	// Initialize sequences
 	lastSequence := make(map[string]int64)
 	for _, productId := range productIds {
@@ -164,80 +133,20 @@ func L3Handler(
 				lastSequence[msg.ProductID] = msg.Sequence
 
 				// Save the message to the database
-				m := database.ToOrderMessage(msg)
-				db.Create(&m)
+				if wsConf.RawMessages {
+					m := database.ToOrderMessage(msg)
+					go db.Create(&m)
+				}
 
 				// Update the order book
 				UpdateOrderBook(Books.Get(msg.ProductID), msg)
 
-				switch msg.Type {
-				case "received":
-					// Create the new transaction
-					openTransactions.Set(msg.ProductID, msg.OrderID, &database.Transaction{
-						OrderID:      msg.OrderID,
-						ProductId:    msg.ProductID,
-						Time:         msg.Time.Time().UnixMicro(),
-						Price:        msg.Price,
-						Side:         msg.Side,
-						Size:         msg.Size,
-						Funds:        msg.Funds,
-						OrderType:    msg.OrderType,
-						AddedToBook:  false,
-						OrderChanged: false,
-					})
-				case "open":
-					// Update the old transaction
-					openTransactions.Update(msg.ProductID, msg.OrderID,
-						func(transaction *database.Transaction) {
-							transaction.AddedToBook = true
-							transaction.RemainingSize = msg.RemainingSize
-						})
-				case "done":
-					// Update the old transaction
-					t := openTransactions.Get(msg.ProductID, msg.OrderID)
-					t.ClosedAt = msg.Time.Time().UnixMicro()
-					t.Reason = msg.Reason
-					// Add it to done transactions
-					doneTransactions.Set(msg.ProductID, msg.OrderID, t)
-					// Remove it from the open transactions
-					openTransactions.Remove(msg.ProductID, msg.OrderID)
-				case "match":
-					openTransactions.Update(msg.ProductID, msg.TakerOrderID,
-						func(transaction *database.Transaction) {
-							transaction.MatchId = msg.MakerOrderID
-						})
-					openTransactions.Update(msg.ProductID, msg.MakerOrderID,
-						func(transaction *database.Transaction) {
-							transaction.MatchId = msg.TakerOrderID
-						})
-				case "change":
-					openTransactions.Update(msg.ProductID, msg.OrderID,
-						func(transaction *database.Transaction) {
-							transaction.OrderChanged = true
-							transaction.NewSize = msg.NewSize
-						})
-				case "activate":
-					// We can't actually do anything with this
+				// Update the transactions
+				if wsConf.StoreTransactions {
+					UpdateTransactions(openTransactions, doneTransactions, msg)
 				}
-
-				// DEBUG
-				if count%1000 == 0 {
-					log.Println(count / 1000)
-				}
-
-				if count == 100000 {
-					// Flush out all the transactions that have occurred
-					for _, productId := range productIds {
-						tmp := openTransactions.Pop(productId)
-						db.Create(&tmp)
-						tmp = doneTransactions.Pop(productId)
-						db.Create(&tmp)
-					}
-					os.Exit(0)
-				}
-				count++
 			}
-			// Simply ignore old messages if this somehow ever occurred
+			// Simply ignore old messages
 		}
 	}
 }

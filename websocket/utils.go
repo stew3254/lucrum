@@ -5,6 +5,7 @@ import (
 	"github.com/preichenberger/go-coinbasepro/v2"
 	"github.com/stew3254/ratelimit"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"log"
 	"lucrum/database"
 	"sync"
@@ -78,7 +79,7 @@ func (t *Transactions) Remove(productId, orderId string) {
 	t.lock.Unlock()
 }
 
-func NewTransactions(productIds []string) *Transactions {
+func NewTransactions(productIds []string, books *OrderBook) *Transactions {
 	t := &Transactions{
 		transactions: make(map[string]map[string]*database.Transaction),
 		lock:         &sync.RWMutex{},
@@ -86,6 +87,31 @@ func NewTransactions(productIds []string) *Transactions {
 	// Initialize the map
 	for _, productId := range productIds {
 		t.transactions[productId] = make(map[string]*database.Transaction)
+	}
+
+	// Add transactions from the order book
+	if books != nil {
+		for _, productId := range productIds {
+			book := Books.Get(productId)
+			addTransactions := func(l *list.List) {
+				for e := l.Front(); e != nil; e = e.Next() {
+					v := e.Value.(database.OrderBookSnapshot)
+					transaction := &database.Transaction{
+						OrderID:       v.OrderID,
+						ProductId:     v.ProductId,
+						Time:          v.Time,
+						Price:         v.Price,
+						Side:          "buy",
+						Size:          v.Size,
+						AddedToBook:   true,
+						RemainingSize: v.Size,
+					}
+					t.Set(v.ProductId, v.OrderID, transaction)
+				}
+			}
+			addTransactions(book.Buys)
+			addTransactions(book.Sells)
+		}
 	}
 	return t
 }
@@ -184,13 +210,14 @@ func GetOrderBooks(
 		// Create the function to create a snapshot
 		toSnapshot := func(isAsk bool, entry coinbasepro.BookEntry) database.OrderBookSnapshot {
 			return database.OrderBookSnapshot{
-				ProductId: productIds[i],
-				Sequence:  books[i].Sequence,
-				IsAsk:     isAsk,
-				Time:      0,
-				Price:     entry.Price,
-				Size:      entry.Size,
-				OrderID:   entry.OrderID,
+				ProductId:     productIds[i],
+				FirstSequence: books[i].Sequence,
+				LastSequence:  books[i].Sequence,
+				IsAsk:         isAsk,
+				Time:          0,
+				Price:         entry.Price,
+				Size:          entry.Size,
+				OrderID:       entry.OrderID,
 			}
 		}
 		// Create the book
@@ -223,11 +250,11 @@ func obListToDB(l *list.List, db *gorm.DB, size int) {
 		for i := 0; i < size; i++ {
 			// There are no entries left so add remainders and break out of the loop
 			if e == nil {
-				db.Create(entries[:i])
-				// db.Clauses(clause.OnConflict{
-				// 	Columns:   []clause.Column{{Name: "order_id"}},
-				// 	DoNothing: true,
-				// }).Create(entries)
+				// db.Create(entries[:i])
+				db.Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "order_id"}},
+					DoUpdates: clause.AssignmentColumns([]string{"last_sequence", "price", "size"}),
+				}).Create(entries[:i])
 				return
 			}
 
@@ -235,11 +262,11 @@ func obListToDB(l *list.List, db *gorm.DB, size int) {
 			e = e.Next()
 		}
 		// Add entries to the database
-		db.Create(entries)
-		// db.Clauses(clause.OnConflict{
-		// 	Columns:   []clause.Column{{Name: "order_id"}},
-		// 	DoNothing: true,
-		// }).Create(entries)
+		// db.Create(entries)
+		db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "order_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"last_sequence"}),
+		}).Create(entries)
 	}
 }
 
@@ -258,12 +285,13 @@ func UpdateOrderBook(book *Book, msg coinbasepro.Message) {
 		// Create the order book snapshot
 		now := time.Now()
 		entry := database.OrderBookSnapshot{
-			ProductId: msg.ProductID,
-			Sequence:  msg.Sequence,
-			Time:      now.UnixMicro(),
-			Price:     msg.Price,
-			Size:      msg.RemainingSize,
-			OrderID:   msg.OrderID,
+			ProductId:     msg.ProductID,
+			FirstSequence: msg.Sequence,
+			LastSequence:  msg.Sequence,
+			Time:          now.UnixMicro(),
+			Price:         msg.Price,
+			Size:          msg.RemainingSize,
+			OrderID:       msg.OrderID,
 		}
 
 		// Add the order to the front of the book
@@ -317,16 +345,54 @@ func UpdateOrderBook(book *Book, msg coinbasepro.Message) {
 	book.Sequence = msg.Sequence
 }
 
-// SaveOrderBook writes out the book to the database
-func SaveOrderBook(book *Book, db *gorm.DB) {
-	update := func(l *list.List, sequence int64) {
-		for e := l.Front(); e != nil; e = e.Next() {
-			v := e.Value.(database.OrderBookSnapshot)
-			v.Sequence = sequence
-			e.Value = v
-		}
-		obListToDB(l, db, 10000)
+func UpdateTransactions(open, done *Transactions, msg coinbasepro.Message) {
+	switch msg.Type {
+	case "received":
+		// Create the new transaction
+		open.Set(msg.ProductID, msg.OrderID, &database.Transaction{
+			OrderID:      msg.OrderID,
+			ProductId:    msg.ProductID,
+			Time:         msg.Time.Time().UnixMicro(),
+			Price:        msg.Price,
+			Side:         msg.Side,
+			Size:         msg.Size,
+			Funds:        msg.Funds,
+			OrderType:    msg.OrderType,
+			AddedToBook:  false,
+			OrderChanged: false,
+		})
+	case "open":
+		// Update the old transaction
+		open.Update(msg.ProductID, msg.OrderID,
+			func(transaction *database.Transaction) {
+				transaction.AddedToBook = true
+				transaction.RemainingSize = msg.RemainingSize
+			})
+	case "done":
+		// Update the old transaction
+		t := open.Get(msg.ProductID, msg.OrderID)
+		t.ClosedAt = msg.Time.Time().UnixMicro()
+		t.Reason = msg.Reason
+		// Add it to done transactions
+		done.Set(msg.ProductID, msg.OrderID, t)
+		// Remove it from the open transactions
+		open.Remove(msg.ProductID, msg.OrderID)
+	case "match":
+		open.Update(msg.ProductID, msg.TakerOrderID,
+			func(transaction *database.Transaction) {
+				transaction.MatchId = msg.MakerOrderID
+			})
+		open.Update(msg.ProductID, msg.MakerOrderID,
+			func(transaction *database.Transaction) {
+				transaction.MatchId = msg.TakerOrderID
+			})
+	case "change":
+		open.Update(msg.ProductID, msg.OrderID,
+			func(transaction *database.Transaction) {
+				transaction.OrderChanged = true
+				transaction.NewSize = msg.NewSize
+			})
 	}
-	update(book.Buys, book.Sequence)
-	update(book.Sells, book.Sequence)
 }
+
+// TODO write save transactions

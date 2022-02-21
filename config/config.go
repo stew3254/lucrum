@@ -18,9 +18,12 @@ type Coinbase struct {
 	Passphrase string `json:"api_passphrase"`
 }
 
-// Websocket contains the list of channels to subscribe with
+// Websocket contains the list of channels to subscribe with and what info to store
 type Websocket struct {
-	Channels []coinbasepro.MessageChannel `json:"channels"`
+	Channels          []coinbasepro.MessageChannel `json:"channels"`
+	Granularity       int                          `json:"granularity"`
+	RawMessages       bool                         `json:"raw_messages"`
+	StoreTransactions bool                         `json:"store_transactions"`
 }
 
 // Bot has the bot specific (production/sandbox) configurations

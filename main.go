@@ -34,7 +34,7 @@ func testingStuff(client *coinbasepro.Client, conf config.Config) {
 	for i := 0; i < 2; i++ {
 		DB.Where("sequence = ?", sequences[i]).Find(&tempBooks[i])
 		books[i] = &websocket.Book{
-			Sequence: tempBooks[i][0].Sequence,
+			Sequence: tempBooks[i][0].FirstSequence,
 			Buys:     list.New(),
 			Sells:    list.New(),
 		}
