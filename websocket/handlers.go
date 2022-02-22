@@ -105,12 +105,15 @@ func L3Handler(
 	go Books.Save(db)
 
 	// Initialize transactions
-	var openTransactions *Transactions
-	var doneTransactions *Transactions
-	if wsConf.StoreTransactions {
-		openTransactions = NewTransactions(productIds, Books)
-		doneTransactions = NewTransactions(productIds, nil)
-	}
+	openTransactions := NewTransactions(productIds, Books)
+	doneTransactions := NewTransactions(productIds, nil)
+
+	// Aggregate transactions and save them to the db
+	AggregateTransactions(wsConf, db, AggregateContext{
+		ProductIds: productIds,
+		Open:       openTransactions,
+		Done:       doneTransactions,
+	})
 
 	// Initialize sequences
 	lastSequence := make(map[string]int64)
@@ -142,9 +145,7 @@ func L3Handler(
 				UpdateOrderBook(Books.Get(msg.ProductID), msg)
 
 				// Update the transactions
-				if wsConf.StoreTransactions {
-					UpdateTransactions(openTransactions, doneTransactions, msg)
-				}
+				UpdateTransactions(openTransactions, doneTransactions, msg)
 			}
 			// Simply ignore old messages
 		}

@@ -7,161 +7,11 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"log"
+	"lucrum/config"
 	"lucrum/database"
 	"sync"
 	"time"
 )
-
-type Transactions struct {
-	transactions map[string]map[string]*database.Transaction
-	lock         *sync.RWMutex
-}
-
-// Pop removes all the transactions from the map gives them as a struct
-func (t *Transactions) Pop(productId string) (out []database.Transaction) {
-	t.lock.Lock()
-	out = make([]database.Transaction, 0, len(t.transactions[productId]))
-	for _, v := range t.transactions[productId] {
-		out = append(out, *v)
-	}
-	t.transactions[productId] = make(map[string]*database.Transaction)
-	t.lock.Unlock()
-	return out
-}
-
-func (t *Transactions) ToSlice(productId string) (transactions []*database.Transaction) {
-	transactions = make([]*database.Transaction, 0, len(t.transactions))
-	t.lock.RLock()
-	for _, v := range t.transactions[productId] {
-		transactions = append(transactions, v)
-	}
-	t.lock.RUnlock()
-	return transactions
-}
-
-func (t *Transactions) FromSlice(productId string, transactions []*database.Transaction) {
-	t.lock.Lock()
-	t.transactions[productId] = make(map[string]*database.Transaction)
-	for _, v := range transactions {
-		t.transactions[productId][v.OrderID] = v
-	}
-	t.lock.Unlock()
-}
-
-func (t *Transactions) Get(productId, orderId string) *database.Transaction {
-	t.lock.RLock()
-	tmp := t.transactions[productId][orderId]
-	t.lock.RUnlock()
-	return tmp
-}
-
-func (t *Transactions) Set(productId, orderId string, v *database.Transaction) {
-	t.lock.Lock()
-	t.transactions[productId][orderId] = v
-	t.lock.Unlock()
-}
-
-// Update a value with the given function
-func (t *Transactions) Update(
-	productId string,
-	orderId string,
-	f func(transaction *database.Transaction)) {
-	transaction := t.Get(productId, orderId)
-	t.lock.Lock()
-	f(transaction)
-	t.lock.Unlock()
-	t.Set(productId, orderId, transaction)
-}
-
-func (t *Transactions) Remove(productId, orderId string) {
-	t.lock.Lock()
-	delete(t.transactions[productId], orderId)
-	t.lock.Unlock()
-}
-
-func NewTransactions(productIds []string, books *OrderBook) *Transactions {
-	t := &Transactions{
-		transactions: make(map[string]map[string]*database.Transaction),
-		lock:         &sync.RWMutex{},
-	}
-	// Initialize the map
-	for _, productId := range productIds {
-		t.transactions[productId] = make(map[string]*database.Transaction)
-	}
-
-	// Add transactions from the order book
-	if books != nil {
-		for _, productId := range productIds {
-			book := Books.Get(productId)
-			addTransactions := func(l *list.List) {
-				for e := l.Front(); e != nil; e = e.Next() {
-					v := e.Value.(database.OrderBookSnapshot)
-					transaction := &database.Transaction{
-						OrderID:       v.OrderID,
-						ProductId:     v.ProductId,
-						Time:          v.Time,
-						Price:         v.Price,
-						Side:          "buy",
-						Size:          v.Size,
-						AddedToBook:   true,
-						RemainingSize: v.Size,
-					}
-					t.Set(v.ProductId, v.OrderID, transaction)
-				}
-			}
-			addTransactions(book.Buys)
-			addTransactions(book.Sells)
-		}
-	}
-	return t
-}
-
-type Book struct {
-	Sequence int64
-	Buys     *list.List
-	Sells    *list.List
-}
-
-type OrderBook struct {
-	books map[string]*Book
-	lock  *sync.RWMutex
-}
-
-func (o *OrderBook) Get(productId string) *Book {
-	o.lock.RLock()
-	b := o.books[productId]
-	o.lock.RUnlock()
-	return b
-}
-
-func (o *OrderBook) Set(productId string, book *Book) {
-	o.lock.Lock()
-	o.books[productId] = book
-	o.lock.Unlock()
-}
-
-func (o *OrderBook) Remove(productId string) {
-	o.lock.Lock()
-	delete(o.books, productId)
-	o.lock.Unlock()
-}
-
-// Save all books to the db
-func (o *OrderBook) Save(db *gorm.DB) {
-	o.lock.RLock()
-	for _, book := range o.books {
-		obListToDB(book.Buys, db, 10000)
-		obListToDB(book.Sells, db, 10000)
-	}
-	o.lock.RUnlock()
-}
-
-func NewOrderBook() *OrderBook {
-	return &OrderBook{
-		books: make(map[string]*Book),
-		lock:  &sync.RWMutex{},
-	}
-}
 
 // Books is the global order book used throughout the program for lookup
 var Books *OrderBook
@@ -205,6 +55,7 @@ func GetOrderBooks(
 	wg.Wait()
 
 	// Create a slice of snapshot entries to add to the database
+	now := time.Now().UnixMicro()
 	snapshot = NewOrderBook()
 	for i := 0; i < len(productIds); i++ {
 		// Create the function to create a snapshot
@@ -214,18 +65,14 @@ func GetOrderBooks(
 				FirstSequence: books[i].Sequence,
 				LastSequence:  books[i].Sequence,
 				IsAsk:         isAsk,
-				Time:          0,
+				Time:          now,
 				Price:         entry.Price,
 				Size:          entry.Size,
 				OrderID:       entry.OrderID,
 			}
 		}
 		// Create the book
-		book := &Book{
-			Sequence: books[i].Sequence,
-			Buys:     list.New(),
-			Sells:    list.New(),
-		}
+		book := NewBook(books[i].Sequence)
 
 		// Add all the asks and bids for this coin to the slice
 		for _, ask := range books[i].Asks {
@@ -283,12 +130,12 @@ func UpdateOrderBook(book *Book, msg coinbasepro.Message) {
 	switch msg.Type {
 	case "open":
 		// Create the order book snapshot
-		now := time.Now()
+		now := time.Now().UnixMicro()
 		entry := database.OrderBookSnapshot{
 			ProductId:     msg.ProductID,
 			FirstSequence: msg.Sequence,
 			LastSequence:  msg.Sequence,
-			Time:          now.UnixMicro(),
+			Time:          now,
 			Price:         msg.Price,
 			Size:          msg.RemainingSize,
 			OrderID:       msg.OrderID,
@@ -396,3 +243,63 @@ func UpdateTransactions(open, done *Transactions, msg coinbasepro.Message) {
 }
 
 // TODO write save transactions
+
+// AggregateContext is information the aggregate function needs
+type AggregateContext struct {
+	ProductIds []string
+	Open       *Transactions
+	Done       *Transactions
+}
+
+func AggregateTransactions(
+	conf config.Websocket,
+	db *gorm.DB,
+	ctx AggregateContext,
+) {
+	// Create our timer to wait for messages
+	wait := time.Duration(conf.Granularity) * time.Second
+	timer := time.NewTimer(wait)
+
+	for {
+		// Wait until the timer expires
+		<-timer.C
+
+		aggregates := make([]database.AggregateTransaction, 0, len(ctx.ProductIds))
+		now := time.Now().UnixMicro()
+		for _, productId := range ctx.ProductIds {
+			aggregate := database.AggregateTransaction{
+				ProductId:                productId,
+				Granularity:              conf.Granularity,
+				TimeStarted:              now,
+				NumTransactionsSeen:      ctx.Done.Len(),
+				NumTransactionsOnBook:    Books.Get(productId).Len(),
+				NumNewTransactionsOnBook: 0,
+				NumMatches:               0,
+				NumBuys:                  0,
+				NumSells:                 0,
+				NumCancelledBuys:         0,
+				NumCancelledSells:        0,
+				NumLimitBuys:             0,
+				NumLimitSells:            0,
+				NumMarketBuys:            0,
+				NumMarketSells:           0,
+				NumTakerBuys:             0,
+				NumTakerSells:            0,
+				AmtCoinTraded:            "",
+				AvgTimeBetweenTrades:     0,
+				HighestPrice:             "",
+				LowestPrice:              "",
+				AvgPrice:                 "",
+				MedianPrice:              "",
+				HighestSize:              "",
+				LowestSize:               "",
+				AvgSize:                  "",
+				MedianSize:               "",
+			}
+		}
+
+		// Reset the timer
+		timer.Reset(wait)
+	}
+
+}

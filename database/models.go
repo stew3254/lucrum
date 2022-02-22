@@ -38,7 +38,7 @@ type HistoricalData struct {
 
 // OrderBookSnapshot contains entries to build the state of the book at a specific time
 type OrderBookSnapshot struct {
-	Id            int64  `gorm:"type:int; primaryKey; not null"`
+	OrderID       string `gorm:"type:text; primaryKey; not null"`
 	ProductId     string `gorm:"type:text; not null"`
 	FirstSequence int64  `gorm:"type:int; not null"`
 	LastSequence  int64  `gorm:"type:int; not null"`
@@ -46,7 +46,6 @@ type OrderBookSnapshot struct {
 	Time          int64  `gorm:"type:int; not null"`
 	Price         string `gorm:"type:text; not null"`
 	Size          string `gorm:"type:text; not null"`
-	OrderID       string `gorm:"type:text; not null"`
 }
 
 type Transaction struct {
@@ -68,4 +67,36 @@ type Transaction struct {
 	MatchId       string `gorm:"varchar(128)"`
 	// StopType      string `gorm:"type:varchar(16)"`
 	// StopPrice     string `gorm:"type:text"`
+}
+
+type AggregateTransaction struct {
+	ProductId                string
+	Granularity              int64
+	TimeStarted              int64
+	NumTransactionsSeen      int
+	NumTransactionsOnBook    int
+	NumNewTransactionsOnBook int
+	NumMatches               int
+	NumBuys                  int
+	NumSells                 int
+	NumCancelledBuys         int
+	NumCancelledSells        int
+	NumLimitBuys             int
+	NumLimitSells            int
+	NumMarketBuys            int
+	NumMarketSells           int
+	NumTakerBuys             int
+	NumTakerSells            int
+	AmtCoinTraded            string
+	AvgTimeBetweenTrades     int
+
+	// These are all matched prices, not irrelevant ones
+	HighestPrice string
+	LowestPrice  string
+	AvgPrice     string
+	MedianPrice  string
+	HighestSize  string
+	LowestSize   string
+	AvgSize      string
+	MedianSize   string
 }
