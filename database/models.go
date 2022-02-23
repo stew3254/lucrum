@@ -78,7 +78,11 @@ type AggregateTransaction struct {
 	NumNewTransactionsOnBook int
 	NumMatches               int
 	NumBuys                  int
+	NumOpenBuys              int
+	NumFilledBuys            int
 	NumSells                 int
+	NumOpenSells             int
+	NumFilledSells           int
 	NumCancelledBuys         int
 	NumCancelledSells        int
 	NumLimitBuys             int
@@ -89,6 +93,14 @@ type AggregateTransaction struct {
 	NumTakerSells            int
 	AmtCoinTraded            string
 	AvgTimeBetweenTrades     int
+	AvgOpenBuyPrice          string
+	AvgOpenSellPrice         string
+	MedianOpenBuyPrice       string
+	MedianOpenSellPrice      string
+	AvgOpenBuySize           string
+	AvgOpenSellSize          string
+	MedianOpenBuySize        string
+	MedianOpenSellSize       string
 
 	// These are all matched prices, not irrelevant ones
 	HighestPrice string

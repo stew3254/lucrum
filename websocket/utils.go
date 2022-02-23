@@ -3,12 +3,15 @@ package websocket
 import (
 	"container/list"
 	"github.com/preichenberger/go-coinbasepro/v2"
+	"github.com/shopspring/decimal"
 	"github.com/stew3254/ratelimit"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"log"
 	"lucrum/config"
 	"lucrum/database"
+	"lucrum/lib"
+	"sort"
 	"sync"
 	"time"
 )
@@ -217,7 +220,7 @@ func UpdateTransactions(open, done *Transactions, msg coinbasepro.Message) {
 			})
 	case "done":
 		// Update the old transaction
-		t := open.Get(msg.ProductID, msg.OrderID)
+		t, _ := open.Get(msg.ProductID, msg.OrderID)
 		t.ClosedAt = msg.Time.Time().UnixMicro()
 		t.Reason = msg.Reason
 		// Add it to done transactions
@@ -248,7 +251,210 @@ func UpdateTransactions(open, done *Transactions, msg coinbasepro.Message) {
 type AggregateContext struct {
 	ProductIds []string
 	Open       *Transactions
+	OldOpen    *Transactions
 	Done       *Transactions
+}
+
+func newAddedToBook(old, new *Transactions, productId string) (count int) {
+	stop := make(chan struct{}, 1)
+	defer close(stop)
+
+	transactionChan := new.Iter(productId, stop)
+	for {
+		select {
+		case transaction, ok := <-transactionChan:
+			if !ok {
+				return count
+			}
+
+			if _, exists := old.Get(productId, transaction.OrderID); !exists {
+				// New item added to the book
+				count++
+			}
+		}
+	}
+}
+
+func handleOpen(ctx AggregateContext, aggregate *database.AggregateTransaction, productId string) {
+	stop := make(chan struct{}, 1)
+	defer close(stop)
+	openChan := ctx.Open.Iter(productId, stop)
+
+	buyPrices := make([]decimal.Decimal, 0)
+	sellPrices := make([]decimal.Decimal, 0)
+	buySizes := make([]decimal.Decimal, 0)
+	sellSizes := make([]decimal.Decimal, 0)
+
+	for {
+		select {
+		case transaction, ok := <-openChan:
+			if !ok {
+				goto done
+			}
+
+			price, err := decimal.NewFromString(transaction.Price)
+			if err != nil {
+				log.Println("Bad price for transaction", transaction.OrderID)
+			}
+
+			size, err := decimal.NewFromString(transaction.Size)
+			if err != nil {
+				log.Println("Bad size for transaction", transaction.OrderID)
+			}
+
+			if transaction.Side == "buy" {
+				// Transaction is a buy
+				buyPrices = append(buyPrices, price)
+				buySizes = append(buySizes, size)
+
+				aggregate.NumBuys++
+				if transaction.AddedToBook {
+					aggregate.NumOpenBuys++
+				}
+
+				if transaction.OrderType == "limit" {
+					aggregate.NumLimitBuys++
+				}
+			} else {
+				// Transaction is a sell
+				sellPrices = append(sellPrices, price)
+				sellSizes = append(sellSizes, size)
+
+				aggregate.NumSells++
+				if transaction.AddedToBook {
+					aggregate.NumOpenSells++
+				}
+
+				if transaction.OrderType == "limit" {
+					aggregate.NumLimitSells++
+				}
+			}
+
+			if _, exists := ctx.OldOpen.Get(productId, transaction.OrderID); !exists {
+				// New item added to the book
+				aggregate.NumNewTransactionsOnBook++
+				aggregate.NumTransactionsSeen++
+			}
+		}
+	}
+
+done:
+	// Sort the slices
+	sort.Slice(buyPrices, func(i, j int) bool {
+		return buyPrices[i].LessThan(buyPrices[j])
+	})
+	sort.Slice(sellPrices, func(i, j int) bool {
+		return buyPrices[i].LessThan(buyPrices[j])
+	})
+	sort.Slice(buySizes, func(i, j int) bool {
+		return buySizes[i].LessThan(buySizes[j])
+	})
+	sort.Slice(sellSizes, func(i, j int) bool {
+		return buySizes[i].LessThan(buySizes[j])
+	})
+
+	aggregate.AvgOpenBuyPrice = decimal.Avg(buyPrices[0], buyPrices[1:]...).String()
+	aggregate.AvgOpenSellPrice = decimal.Avg(sellPrices[0], sellPrices[1:]...).String()
+	aggregate.MedianOpenBuyPrice = lib.Median(buyPrices).String()
+	aggregate.MedianOpenSellPrice = lib.Median(sellPrices).String()
+
+	aggregate.AvgOpenBuySize = decimal.Avg(buySizes[0], buySizes[1:]...).String()
+	aggregate.AvgOpenSellSize = decimal.Avg(sellSizes[0], sellSizes[1:]...).String()
+	aggregate.MedianOpenBuySize = lib.Median(buySizes).String()
+	aggregate.MedianOpenSellSize = lib.Median(sellSizes).String()
+}
+
+func handleDone(ctx AggregateContext, aggregate *database.AggregateTransaction, productId string) {
+	stop := make(chan struct{}, 1)
+	doneChan := ctx.Done.Iter(productId, stop)
+
+	prices := make([]decimal.Decimal, 0)
+	sizes := make([]decimal.Decimal, 0)
+
+	for {
+		select {
+		case transaction, ok := <-doneChan:
+			if !ok {
+				goto done
+			}
+
+			// This is a new transaction that has occurred
+			aggregate.NumTransactionsSeen++
+
+			price, err := decimal.NewFromString(transaction.Price)
+			if err != nil {
+				log.Println("Bad price for transaction", transaction.OrderID)
+			}
+
+			size, err := decimal.NewFromString(transaction.Size)
+			if err != nil {
+				log.Println("Bad size for transaction", transaction.OrderID)
+			}
+
+			// Found a match
+			if len(transaction.MatchId) > 0 {
+				aggregate.NumMatches++
+				// Add the matched prices and sizes
+				prices = append(prices, price)
+				sizes = append(sizes, size)
+			}
+
+			if transaction.Side == "buy" {
+				// Transaction is a buy
+				aggregate.NumBuys++
+
+				if transaction.OrderType == "limit" {
+					aggregate.NumLimitBuys++
+				} else if transaction.OrderType == "market" {
+					aggregate.NumMarketBuys++
+				}
+
+				if transaction.Reason == "filled" {
+					aggregate.NumFilledBuys++
+				} else if transaction.Reason == "canceled" {
+					aggregate.NumCancelledBuys++
+				}
+			} else {
+				// Transaction is a sell
+				aggregate.NumSells++
+
+				if transaction.AddedToBook {
+					aggregate.NumOpenSells++
+				}
+
+				if transaction.OrderType == "limit" {
+					aggregate.NumLimitSells++
+				} else if transaction.OrderType == "market" {
+					aggregate.NumMarketSells++
+				}
+
+				if transaction.Reason == "filled" {
+					aggregate.NumFilledBuys++
+				} else if transaction.Reason == "canceled" {
+					aggregate.NumCancelledBuys++
+				}
+			}
+		}
+	}
+
+done:
+	// Sort the slices
+	sort.Slice(prices, func(i, j int) bool {
+		return prices[i].LessThan(prices[j])
+	})
+	sort.Slice(sizes, func(i, j int) bool {
+		return sizes[i].LessThan(sizes[j])
+	})
+
+	aggregate.HighestPrice = prices[len(prices)-1].String()
+	aggregate.LowestPrice = prices[0].String()
+	aggregate.AvgPrice = decimal.Avg(prices[0], prices[1:]...).String()
+	aggregate.MedianPrice = lib.Median(prices).String()
+
+	aggregate.HighestSize = sizes[len(sizes)-1].String()
+	aggregate.LowestSize = sizes[0].String()
+	aggregate.AvgSize = decimal.Avg(sizes[0], sizes[1:]...).String()
+	aggregate.MedianSize = lib.Median(sizes).String()
 }
 
 func AggregateTransactions(
@@ -267,36 +473,18 @@ func AggregateTransactions(
 		aggregates := make([]database.AggregateTransaction, 0, len(ctx.ProductIds))
 		now := time.Now().UnixMicro()
 		for _, productId := range ctx.ProductIds {
-			aggregate := database.AggregateTransaction{
-				ProductId:                productId,
-				Granularity:              conf.Granularity,
-				TimeStarted:              now,
-				NumTransactionsSeen:      ctx.Done.Len(),
-				NumTransactionsOnBook:    Books.Get(productId).Len(),
-				NumNewTransactionsOnBook: 0,
-				NumMatches:               0,
-				NumBuys:                  0,
-				NumSells:                 0,
-				NumCancelledBuys:         0,
-				NumCancelledSells:        0,
-				NumLimitBuys:             0,
-				NumLimitSells:            0,
-				NumMarketBuys:            0,
-				NumMarketSells:           0,
-				NumTakerBuys:             0,
-				NumTakerSells:            0,
-				AmtCoinTraded:            "",
-				AvgTimeBetweenTrades:     0,
-				HighestPrice:             "",
-				LowestPrice:              "",
-				AvgPrice:                 "",
-				MedianPrice:              "",
-				HighestSize:              "",
-				LowestSize:               "",
-				AvgSize:                  "",
-				MedianSize:               "",
+			aggregate := &database.AggregateTransaction{
+				ProductId:             productId,
+				Granularity:           conf.Granularity,
+				TimeStarted:           now,
+				NumTransactionsSeen:   ctx.Done.Len(),
+				NumTransactionsOnBook: Books.Get(productId).Len(),
 			}
+			handleOpen(ctx, aggregate, productId)
+			handleDone(ctx, aggregate, productId)
 		}
+
+		db.Create(&aggregates)
 
 		// Reset the timer
 		timer.Reset(wait)

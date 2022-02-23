@@ -42,11 +42,11 @@ func (t *Transactions) FromSlice(productId string, transactions []*database.Tran
 	t.lock.Unlock()
 }
 
-func (t *Transactions) Get(productId, orderId string) *database.Transaction {
+func (t *Transactions) Get(productId, orderId string) (*database.Transaction, bool) {
 	t.lock.RLock()
-	tmp := t.transactions[productId][orderId]
+	tmp, exists := t.transactions[productId][orderId]
 	t.lock.RUnlock()
-	return tmp
+	return tmp, exists
 }
 
 func (t *Transactions) Set(productId, orderId string, v *database.Transaction) {
@@ -60,7 +60,11 @@ func (t *Transactions) Update(
 	productId string,
 	orderId string,
 	f func(transaction *database.Transaction)) {
-	transaction := t.Get(productId, orderId)
+	transaction, exists := t.Get(productId, orderId)
+	// Do nothing since this doesn't exist
+	if !exists {
+		return
+	}
 	t.lock.Lock()
 	f(transaction)
 	t.lock.Unlock()

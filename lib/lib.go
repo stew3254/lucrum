@@ -3,6 +3,7 @@ package lib
 import (
 	"bufio"
 	"github.com/sevlyar/go-daemon"
+	"github.com/shopspring/decimal"
 	"log"
 	"os"
 	"strings"
@@ -50,4 +51,8 @@ func AlertUser() (err error) {
 		os.Exit(0)
 	}
 	return
+}
+
+func Median(slice []decimal.Decimal) decimal.Decimal {
+	return slice[(len(slice))/2]
 }

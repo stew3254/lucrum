@@ -106,12 +106,14 @@ func L3Handler(
 
 	// Initialize transactions
 	openTransactions := NewTransactions(productIds, Books)
+	oldOpenTransactions := NewTransactions(productIds, Books)
 	doneTransactions := NewTransactions(productIds, nil)
 
 	// Aggregate transactions and save them to the db
-	AggregateTransactions(wsConf, db, AggregateContext{
+	go AggregateTransactions(wsConf, db, AggregateContext{
 		ProductIds: productIds,
 		Open:       openTransactions,
+		OldOpen:    oldOpenTransactions,
 		Done:       doneTransactions,
 	})
 

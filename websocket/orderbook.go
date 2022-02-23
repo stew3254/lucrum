@@ -9,51 +9,19 @@ import (
 
 type Book struct {
 	Sequence int64
-	buyLock  *sync.RWMutex
-	sellLock *sync.RWMutex
-	buys     *list.List
-	sells    *list.List
-}
-
-func (b *Book) BuysIter(stop <-chan struct{}) (iter chan database.OrderBookSnapshot) {
-	return iterHelper(b.buys, b.buyLock, stop)
-}
-
-func (b *Book) SellsIter(stop <-chan struct{}) (iter chan database.OrderBookSnapshot) {
-	return iterHelper(b.sells, b.sellLock, stop)
-}
-
-func (b *Book) AddBuy(snapshot database.OrderBookSnapshot) {
-	b.buyLock
+	Buys     *list.List
+	Sells    *list.List
 }
 
 func (b *Book) Len() int {
-	b.buyLock.RLock()
-	b.sellLock.RLock()
-	defer b.buyLock.RUnlock()
-	defer b.sellLock.RUnlock()
-	return b.buys.Len() + b.sells.Len()
-}
-
-func (b *Book) BuyLen() int {
-	b.buyLock.RLock()
-	defer b.buyLock.RUnlock()
-	return b.buys.Len()
-}
-
-func (b *Book) SellLen() int {
-	b.sellLock.RLock()
-	defer b.sellLock.RUnlock()
-	return b.sells.Len()
+	return b.Buys.Len() + b.Sells.Len()
 }
 
 func NewBook(sequence int64) *Book {
 	return &Book{
 		Sequence: sequence,
-		buyLock:  &sync.RWMutex{},
-		sellLock: &sync.RWMutex{},
-		buys:     list.New(),
-		sells:    list.New(),
+		Buys:     list.New(),
+		Sells:    list.New(),
 	}
 }
 
@@ -91,8 +59,8 @@ func (o *OrderBook) Save(db *gorm.DB) {
 	o.lock.RLock()
 	defer o.lock.RUnlock()
 	for _, book := range o.books {
-		obListToDB(book.buys, db, 10000)
-		obListToDB(book.sells, db, 10000)
+		obListToDB(book.Buys, db, 10000)
+		obListToDB(book.Sells, db, 10000)
 	}
 }
 
