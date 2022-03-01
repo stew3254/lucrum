@@ -36,9 +36,11 @@ func Authenticate(conn *ws.Conn, conf config.Coinbase, msgs []coinbasepro.Messag
 // WSMessageHandler is a wrapper for simple handlers that only handle a message at a time
 func WSMessageHandler(
 	db *gorm.DB,
-	msgChannel chan coinbasepro.Message,
+	msgChannel <-chan coinbasepro.Message,
+	stop chan struct{},
 	handler func(db *gorm.DB, msg coinbasepro.Message),
 ) {
+	defer close(stop)
 	// Forever look for updates
 	var lastSequence int64
 	// Ignore the initial message sent saying we've started listening
@@ -51,6 +53,8 @@ func WSMessageHandler(
 			if msg.Sequence == 0 || msg.Sequence > lastSequence {
 				handler(db, msg)
 			}
+		case <-stop:
+			return
 		}
 	}
 }
@@ -112,9 +116,12 @@ func WSDispatcher(
 
 	// First filter our duplicate msgChannels
 	channels := make(map[string]chan coinbasepro.Message)
+	stopChannels := make(map[string]chan struct{})
 	for _, channel := range msgChannels {
 		// Just see if the channel is in the map
 		if _, ok := channels[channel.Name]; !ok {
+			// Create a stop channel
+			stopChannels[channel.Name] = make(chan struct{}, 1)
 			// Create a new buffered channel.
 			if channel.Name == "full" {
 				// We can hold up to 250 messages which is maybe like 2-3 seconds worth
@@ -128,21 +135,21 @@ func WSDispatcher(
 			// Figure out which function to spawn with corresponding channel
 			switch channel.Name {
 			case "heartbeat":
-				go WSMessageHandler(db, channels[channel.Name], HandleHeartbeat)
+				go WSMessageHandler(db, channels[channel.Name], stopChannels[channel.Name], HandleHeartbeat)
 			case "status":
-				go WSMessageHandler(db, channels[channel.Name], HandleStatus)
+				go WSMessageHandler(db, channels[channel.Name], stopChannels[channel.Name], HandleStatus)
 			case "ticker":
-				go WSMessageHandler(db, channels[channel.Name], HandleTicker)
+				go WSMessageHandler(db, channels[channel.Name], stopChannels[channel.Name], HandleTicker)
 			case "level2":
-				go L2Handler(db, channels[channel.Name])
+				go L2Handler(db, channels[channel.Name], stopChannels[channel.Name])
 			case "user":
 				// In case multiple have been passed in, ignore them
 				if !seenUser {
 					seenUser = true
-					go UserHandler(db, channels[channel.Name])
+					go UserHandler(db, channels[channel.Name], stopChannels[channel.Name])
 				}
 			case "matches":
-				go WSMessageHandler(db, channels[channel.Name], HandleMatches)
+				go WSMessageHandler(db, channels[channel.Name], stopChannels[channel.Name], HandleMatches)
 			case "full":
 				// Since full channel and user channel look the same,
 				// this is the only decent method of confirming they are different
@@ -155,7 +162,14 @@ func WSDispatcher(
 					go WSDispatcher(ctx, conf, db, newMsgChannels)
 				} else if !seenUser {
 					// Normal usage here
-					go L3Handler(botConf, conf.Conf.Ws, db, channels[channel.Name], channel.ProductIds)
+					go L3Handler(
+						botConf,
+						conf.Conf.Ws,
+						db,
+						channels[channel.Name],
+						stopChannels[channel.Name],
+						channel.ProductIds,
+					)
 				}
 			}
 		}

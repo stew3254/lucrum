@@ -46,7 +46,10 @@ func HandleMatches(db *gorm.DB, msg coinbasepro.Message) {
 func L2Handler(
 	db *gorm.DB,
 	msgChannel chan coinbasepro.Message,
+	stop chan struct{},
 ) {
+	defer close(stop)
+
 	// Ignore the initial message sent saying we've started listening
 	<-msgChannel
 
@@ -63,7 +66,10 @@ func L2Handler(
 					log.Println(err)
 				}
 				log.Println(string(out))
+
 			}
+		case <-stop:
+			return
 		}
 	}
 }
@@ -74,10 +80,11 @@ func L3Handler(
 	wsConf config.Websocket,
 	db *gorm.DB,
 	msgChannel chan coinbasepro.Message,
+	stop chan struct{},
 	productIds []string,
 ) {
-	// Look for the first message saying we're listening for messages
-	<-msgChannel
+	// Initialize subscription channels
+	SubChans = NewChannels(productIds)
 
 	// Now we can get the current state of the order books
 	client := &coinbasepro.Client{
@@ -106,51 +113,110 @@ func L3Handler(
 
 	// Initialize transactions
 	openTransactions := NewTransactions(productIds, Books)
-	oldOpenTransactions := NewTransactions(productIds, Books)
 	doneTransactions := NewTransactions(productIds, nil)
 
-	// Aggregate transactions and save them to the db
-	go AggregateTransactions(wsConf, db, AggregateContext{
-		ProductIds: productIds,
-		Open:       openTransactions,
-		OldOpen:    oldOpenTransactions,
-		Done:       doneTransactions,
-	})
-
-	// Initialize sequences
+	// Initialize sequences and channels
 	lastSequence := make(map[string]int64)
+	stopChans := make(map[string]chan struct{})
 	for _, productId := range productIds {
 		lastSequence[productId] = Books.Get(productId).Sequence
+		stopChans[productId] = make(chan struct{}, 1)
 	}
+
+	// Aggregate transactions and save them to the db
+	aggregateSequence := make(map[string]int64)
+	for k, v := range lastSequence {
+		aggregateSequence[k] = v
+	}
+	aggregateStop := make(chan struct{}, 1)
+	alertChan := make(chan struct{}, 1)
+	readerStop := make(chan struct{}, 1)
+
+	go AggregateTransactions(wsConf, db, aggregateStop, alertChan, productIds, aggregateSequence)
+
 	// Forever look for incoming messages
-	for {
-		select {
-		case msg := <-msgChannel:
-			// TODO add proper handling for out of order messages
-			// This accounts for gaps in the sequence
-			if msg.Sequence > lastSequence[msg.ProductID]+1 {
-				// Add all entries to the database because we can't account for the gap that occurred
-				Books = GetOrderBooks(client, rl, productIds)
-				// Add all entries to the database
-				Books.Save(db)
-			} else if msg.Sequence == lastSequence[msg.ProductID]+1 {
-				// Update the sequence
-				lastSequence[msg.ProductID] = msg.Sequence
+	update := func(
+		client *coinbasepro.Client,
+		rl *ratelimit.RateLimiter,
+		openTransactions *Transactions,
+		doneTransactions *Transactions,
+		msgChan <-chan coinbasepro.Message,
+		stop chan struct{},
+		lastSequence int64,
+	) {
+		defer close(stop)
+		for {
+			select {
+			case msg := <-msgChannel:
+				// TODO add proper handling for out of order messages
+				// This accounts for gaps in the sequence
+				if msg.Sequence > lastSequence+1 {
+					// Add all entries to the database because we can't account for the gap that occurred
+					Books = GetOrderBooks(client, rl, productIds)
+					// Add all entries to the database
+					Books.Save(db)
+				} else if msg.Sequence == lastSequence+1 {
+					// Update the sequence
+					lastSequence = msg.Sequence
 
-				// Save the message to the database
-				if wsConf.RawMessages {
-					m := database.ToOrderMessage(msg)
-					go db.Create(&m)
+					// Save the message to the database
+					if wsConf.RawMessages {
+						m := database.ToOrderMessage(msg)
+						go db.Create(&m)
+					}
+
+					// Update the order book
+					UpdateOrderBook(Books.Get(msg.ProductID), msg)
+
+					// Update the transactions
+					UpdateTransactions(openTransactions, doneTransactions, msg)
 				}
-
-				// Update the order book
-				UpdateOrderBook(Books.Get(msg.ProductID), msg)
-
-				// Update the transactions
-				UpdateTransactions(openTransactions, doneTransactions, msg)
-			}
 			// Simply ignore old messages
+
+			// If told to stop, make sure to end
+			case <-stop:
+				return
+			}
 		}
+	}
+
+	// Spin off the goroutines to listen per product id
+	for _, productId := range productIds {
+		go update(
+			client,
+			rl,
+			openTransactions,
+			doneTransactions,
+			SubChans.Add(productId), // Subscribes to the channel
+			stopChans[productId],
+			lastSequence[productId],
+		)
+	}
+
+	// Clean up this map since we don't need it
+	lastSequence = nil
+	aggregateSequence = nil
+
+	// Look for the first message saying we're listening for messages
+	<-msgChannel
+
+	// Alert this function the aggregate has subscribed using the stop chan
+	<-alertChan
+
+	// Now we're ready to start reading out messages
+	go MsgReader(msgChannel, readerStop)
+
+	// Wait on the stop message to alert all the other child goroutines
+	select {
+	case <-stop:
+		close(stop)
+		aggregateStop <- struct{}{}
+		readerStop <- struct{}{}
+		// Tell all the other goroutines to close
+		for _, productId := range productIds {
+			stopChans[productId] <- struct{}{}
+		}
+		return
 	}
 }
 
@@ -158,7 +224,9 @@ func L3Handler(
 func UserHandler(
 	db *gorm.DB,
 	msgChannel chan coinbasepro.Message,
+	stop chan struct{},
 ) {
+	defer close(stop)
 	// Forever look for updates
 	var lastSequence int64
 	for {
@@ -173,6 +241,8 @@ func UserHandler(
 				}
 				log.Println(string(out))
 			}
+		case <-stop:
+			return
 		}
 	}
 }

@@ -53,6 +53,32 @@ func AlertUser() (err error) {
 	return
 }
 
-func Median(slice []decimal.Decimal) decimal.Decimal {
-	return slice[(len(slice))/2]
+func Median(slice []decimal.Decimal) string {
+	if len(slice) == 0 {
+		return "0"
+	} else {
+		if len(slice)&1 == 1 {
+			return slice[(len(slice))/2].String()
+		} else {
+			return decimal.Avg(slice[(len(slice)-1)/2], slice[(len(slice))/2]).String()
+		}
+	}
+}
+
+func Average(d []decimal.Decimal) string {
+	if len(d) == 0 {
+		return "0"
+	} else if len(d) == 1 {
+		return d[0].String()
+	} else {
+		return decimal.Avg(d[0], d[1:]...).String()
+	}
+}
+
+func StringToDecimal(s string) decimal.Decimal {
+	d, err := decimal.NewFromString(s)
+	if err != nil {
+		d = decimal.NewFromInt(0)
+	}
+	return d
 }

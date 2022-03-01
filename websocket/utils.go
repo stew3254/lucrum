@@ -16,6 +16,54 @@ import (
 	"time"
 )
 
+var SubChans *SubscribedChannels
+
+type SubscribedChannels struct {
+	locks    map[string]*sync.RWMutex
+	channels map[string][]chan coinbasepro.Message
+}
+
+func NewChannels(productIds []string) *SubscribedChannels {
+	c := &SubscribedChannels{
+		locks:    make(map[string]*sync.RWMutex),
+		channels: make(map[string][]chan coinbasepro.Message),
+	}
+	for _, productId := range productIds {
+		c.locks[productId] = &sync.RWMutex{}
+		c.channels[productId] = make([]chan coinbasepro.Message, 0, 2)
+	}
+	return c
+}
+
+func (c *SubscribedChannels) Add(productId string) chan coinbasepro.Message {
+	ch := make(chan coinbasepro.Message, 20)
+	c.locks[productId].Lock()
+	c.channels[productId] = append(c.channels[productId], ch)
+	c.locks[productId].Unlock()
+	return ch
+}
+
+func (c *SubscribedChannels) Remove(productId string, ch chan coinbasepro.Message) {
+	c.locks[productId].Lock()
+	slice := c.channels[productId]
+	for i, v := range slice {
+		if ch == v {
+			slice = append(slice[:i], slice[i+1:]...)
+			break
+		}
+	}
+	c.channels[productId] = slice
+	c.locks[productId].Unlock()
+}
+
+func (c *SubscribedChannels) Send(productId string, msg coinbasepro.Message) {
+	c.locks[productId].RLock()
+	for _, ch := range c.channels[productId] {
+		ch <- msg
+	}
+	c.locks[productId].RUnlock()
+}
+
 // Books is the global order book used throughout the program for lookup
 var Books *OrderBook
 
@@ -255,239 +303,352 @@ type AggregateContext struct {
 	Done       *Transactions
 }
 
-func newAddedToBook(old, new *Transactions, productId string) (count int) {
-	stop := make(chan struct{}, 1)
-	defer close(stop)
+func initAggregates(productIds []string, granularity int64) (m map[string]*database.AggregateTransaction) {
+	m = make(map[string]*database.AggregateTransaction)
+	now := time.Now().UnixMicro()
+	for _, productId := range productIds {
+		m[productId] = &database.AggregateTransaction{
+			ProductId:                     productId,
+			Granularity:                   granularity,
+			TimeStarted:                   now,
+			TimeEnded:                     0,
+			NumTransactionsSeen:           0,
+			NumTransactionsOnBook:         0,
+			NumNewTransactionsOnBook:      0,
+			NumNewTransactionsStillOnBook: 0,
+			NumMatches:                    0,
+			NumBuys:                       0,
+			NumOpenBuys:                   0,
+			NumFilledBuys:                 0,
+			NumSells:                      0,
+			NumOpenSells:                  0,
+			NumFilledSells:                0,
+			NumCancelledBuys:              0,
+			NumCancelledSells:             0,
+			NumLimitBuys:                  0,
+			NumLimitSells:                 0,
+			NumMarketBuys:                 0,
+			NumMarketSells:                0,
+			AvgTimeBetweenTrades:          0,
+			AvgOpenBuyPrice:               "0",
+			AvgOpenSellPrice:              "0",
+			MedianOpenBuyPrice:            "0",
+			MedianOpenSellPrice:           "0",
+			AvgOpenBuySize:                "0",
+			AvgOpenSellSize:               "0",
+			MedianOpenBuySize:             "0",
+			MedianOpenSellSize:            "0",
+			HighestPrice:                  "0",
+			LowestPrice:                   "0",
+			AvgPrice:                      "0",
+			MedianPrice:                   "0",
+			HighestSize:                   "0",
+			LowestSize:                    "0",
+			AvgSize:                       "0",
+			MedianSize:                    "0",
+			AmtCoinTraded:                 "0",
+		}
+	}
+	return m
+}
 
-	transactionChan := new.Iter(productId, stop)
-	for {
-		select {
-		case transaction, ok := <-transactionChan:
-			if !ok {
-				return count
+type AggregateCtx struct {
+	Aggregate *database.AggregateTransaction
+	Open      map[string]coinbasepro.Message
+	Prices    map[string][]decimal.Decimal
+	Sizes     map[string][]decimal.Decimal
+	Times     map[string][]int64
+}
+
+func aggregateMsg(ctx AggregateCtx, msg coinbasepro.Message) {
+	ctx.Times[msg.ProductID] = append(ctx.Times[msg.ProductID], msg.Time.Time().UnixMicro())
+
+	switch msg.Type {
+	case "received":
+		// Bump up number of transactions seen
+		ctx.Aggregate.NumTransactionsSeen++
+
+		if msg.Side == "buy" {
+			ctx.Aggregate.NumBuys++
+			if msg.OrderType == "limit" {
+				ctx.Aggregate.NumLimitBuys++
+			} else if msg.OrderType == "market" {
+				ctx.Aggregate.NumMarketBuys++
 			}
-
-			if _, exists := old.Get(productId, transaction.OrderID); !exists {
-				// New item added to the book
-				count++
+		} else {
+			ctx.Aggregate.NumSells++
+			if msg.OrderType == "limit" {
+				ctx.Aggregate.NumLimitSells++
+			} else if msg.OrderType == "market" {
+				ctx.Aggregate.NumMarketSells++
 			}
 		}
+	case "open":
+		ctx.Open[msg.OrderID] = msg
+		// New transaction on the book
+		ctx.Aggregate.NumNewTransactionsOnBook++
+		ctx.Aggregate.NumNewTransactionsStillOnBook++
+
+		if msg.Side == "buy" {
+			ctx.Aggregate.NumOpenBuys++
+		} else {
+			ctx.Aggregate.NumOpenSells++
+		}
+	case "done":
+		// Remove still on book since it's not there anymore
+		if _, exists := ctx.Open[msg.OrderID]; exists {
+			ctx.Aggregate.NumNewTransactionsStillOnBook--
+			delete(ctx.Open, msg.OrderID)
+		}
+
+		if msg.Side == "buy" {
+			if msg.Reason == "filled" {
+				ctx.Aggregate.NumFilledBuys++
+			} else if msg.Reason == "canceled" {
+				ctx.Aggregate.NumCancelledBuys++
+			}
+		} else {
+			if msg.Reason == "filled" {
+				ctx.Aggregate.NumFilledSells++
+			} else if msg.Reason == "canceled" {
+				ctx.Aggregate.NumCancelledSells++
+			}
+		}
+	case "match":
+		ctx.Aggregate.NumMatches++
+
+		// Add the price and size to the book
+		ctx.Prices[msg.ProductID] = append(ctx.Prices[msg.ProductID], lib.StringToDecimal(msg.Price))
+		ctx.Sizes[msg.ProductID] = append(ctx.Sizes[msg.ProductID], lib.StringToDecimal(msg.Size))
 	}
 }
 
-func handleOpen(ctx AggregateContext, aggregate *database.AggregateTransaction, productId string) {
-	stop := make(chan struct{}, 1)
-	defer close(stop)
-	openChan := ctx.Open.Iter(productId, stop)
-
-	buyPrices := make([]decimal.Decimal, 0)
-	sellPrices := make([]decimal.Decimal, 0)
-	buySizes := make([]decimal.Decimal, 0)
-	sellSizes := make([]decimal.Decimal, 0)
-
-	for {
-		select {
-		case transaction, ok := <-openChan:
-			if !ok {
-				goto done
-			}
-
-			price, err := decimal.NewFromString(transaction.Price)
-			if err != nil {
-				log.Println("Bad price for transaction", transaction.OrderID)
-			}
-
-			size, err := decimal.NewFromString(transaction.Size)
-			if err != nil {
-				log.Println("Bad size for transaction", transaction.OrderID)
-			}
-
-			if transaction.Side == "buy" {
-				// Transaction is a buy
-				buyPrices = append(buyPrices, price)
-				buySizes = append(buySizes, size)
-
-				aggregate.NumBuys++
-				if transaction.AddedToBook {
-					aggregate.NumOpenBuys++
-				}
-
-				if transaction.OrderType == "limit" {
-					aggregate.NumLimitBuys++
-				}
-			} else {
-				// Transaction is a sell
-				sellPrices = append(sellPrices, price)
-				sellSizes = append(sellSizes, size)
-
-				aggregate.NumSells++
-				if transaction.AddedToBook {
-					aggregate.NumOpenSells++
-				}
-
-				if transaction.OrderType == "limit" {
-					aggregate.NumLimitSells++
-				}
-			}
-
-			if _, exists := ctx.OldOpen.Get(productId, transaction.OrderID); !exists {
-				// New item added to the book
-				aggregate.NumNewTransactionsOnBook++
-				aggregate.NumTransactionsSeen++
-			}
-		}
+func MsgSubscribe(productIds []string) map[string]chan coinbasepro.Message {
+	m := make(map[string]chan coinbasepro.Message)
+	for _, productId := range productIds {
+		m[productId] = SubChans.Add(productId)
 	}
-
-done:
-	// Sort the slices
-	sort.Slice(buyPrices, func(i, j int) bool {
-		return buyPrices[i].LessThan(buyPrices[j])
-	})
-	sort.Slice(sellPrices, func(i, j int) bool {
-		return buyPrices[i].LessThan(buyPrices[j])
-	})
-	sort.Slice(buySizes, func(i, j int) bool {
-		return buySizes[i].LessThan(buySizes[j])
-	})
-	sort.Slice(sellSizes, func(i, j int) bool {
-		return buySizes[i].LessThan(buySizes[j])
-	})
-
-	aggregate.AvgOpenBuyPrice = decimal.Avg(buyPrices[0], buyPrices[1:]...).String()
-	aggregate.AvgOpenSellPrice = decimal.Avg(sellPrices[0], sellPrices[1:]...).String()
-	aggregate.MedianOpenBuyPrice = lib.Median(buyPrices).String()
-	aggregate.MedianOpenSellPrice = lib.Median(sellPrices).String()
-
-	aggregate.AvgOpenBuySize = decimal.Avg(buySizes[0], buySizes[1:]...).String()
-	aggregate.AvgOpenSellSize = decimal.Avg(sellSizes[0], sellSizes[1:]...).String()
-	aggregate.MedianOpenBuySize = lib.Median(buySizes).String()
-	aggregate.MedianOpenSellSize = lib.Median(sellSizes).String()
+	return m
 }
 
-func handleDone(ctx AggregateContext, aggregate *database.AggregateTransaction, productId string) {
-	stop := make(chan struct{}, 1)
-	doneChan := ctx.Done.Iter(productId, stop)
+func MsgUnsubscribe(chanMap map[string]chan coinbasepro.Message) {
+	for productId, ch := range chanMap {
+		SubChans.Remove(productId, ch)
+	}
+}
 
-	prices := make([]decimal.Decimal, 0)
-	sizes := make([]decimal.Decimal, 0)
+func MsgReader(msgChan chan coinbasepro.Message, stop chan struct{}) {
+	defer func() {
+		close(stop)
+		close(msgChan)
+	}()
 
 	for {
 		select {
-		case transaction, ok := <-doneChan:
-			if !ok {
-				goto done
-			}
-
-			// This is a new transaction that has occurred
-			aggregate.NumTransactionsSeen++
-
-			price, err := decimal.NewFromString(transaction.Price)
-			if err != nil {
-				log.Println("Bad price for transaction", transaction.OrderID)
-			}
-
-			size, err := decimal.NewFromString(transaction.Size)
-			if err != nil {
-				log.Println("Bad size for transaction", transaction.OrderID)
-			}
-
-			// Found a match
-			if len(transaction.MatchId) > 0 {
-				aggregate.NumMatches++
-				// Add the matched prices and sizes
-				prices = append(prices, price)
-				sizes = append(sizes, size)
-			}
-
-			if transaction.Side == "buy" {
-				// Transaction is a buy
-				aggregate.NumBuys++
-
-				if transaction.OrderType == "limit" {
-					aggregate.NumLimitBuys++
-				} else if transaction.OrderType == "market" {
-					aggregate.NumMarketBuys++
-				}
-
-				if transaction.Reason == "filled" {
-					aggregate.NumFilledBuys++
-				} else if transaction.Reason == "canceled" {
-					aggregate.NumCancelledBuys++
-				}
+		case msg, ok := <-msgChan:
+			if ok {
+				SubChans.Send(msg.ProductID, msg)
 			} else {
-				// Transaction is a sell
-				aggregate.NumSells++
-
-				if transaction.AddedToBook {
-					aggregate.NumOpenSells++
-				}
-
-				if transaction.OrderType == "limit" {
-					aggregate.NumLimitSells++
-				} else if transaction.OrderType == "market" {
-					aggregate.NumMarketSells++
-				}
-
-				if transaction.Reason == "filled" {
-					aggregate.NumFilledBuys++
-				} else if transaction.Reason == "canceled" {
-					aggregate.NumCancelledBuys++
-				}
+				// Channel doesn't work, so return
+				return
 			}
+		case <-stop:
+			return
 		}
 	}
-
-done:
-	// Sort the slices
-	sort.Slice(prices, func(i, j int) bool {
-		return prices[i].LessThan(prices[j])
-	})
-	sort.Slice(sizes, func(i, j int) bool {
-		return sizes[i].LessThan(sizes[j])
-	})
-
-	aggregate.HighestPrice = prices[len(prices)-1].String()
-	aggregate.LowestPrice = prices[0].String()
-	aggregate.AvgPrice = decimal.Avg(prices[0], prices[1:]...).String()
-	aggregate.MedianPrice = lib.Median(prices).String()
-
-	aggregate.HighestSize = sizes[len(sizes)-1].String()
-	aggregate.LowestSize = sizes[0].String()
-	aggregate.AvgSize = decimal.Avg(sizes[0], sizes[1:]...).String()
-	aggregate.MedianSize = lib.Median(sizes).String()
 }
 
 func AggregateTransactions(
 	conf config.Websocket,
 	db *gorm.DB,
-	ctx AggregateContext,
+	stop chan struct{},
+	alert chan struct{},
+	productIds []string,
+	lastSequence map[string]int64,
 ) {
-	// Create our timer to wait for messages
+	// Create the timer
 	wait := time.Duration(conf.Granularity) * time.Second
+
+	// Initialize all the aggregates
+	aggregateMap := initAggregates(productIds, conf.Granularity)
+
+	open := make(map[string]coinbasepro.Message, 0)
+	prices := make(map[string][]decimal.Decimal, 0)
+	sizes := make(map[string][]decimal.Decimal, 0)
+	times := make(map[string][]int64, 0)
+
+	// Make sure to close the stop channel
+	defer close(stop)
+
+	// Subscribe to the channels
+	channels := MsgSubscribe(productIds)
+
+	// Tell the parent handler it can start the MsgReader
+	alert <- struct{}{}
+
+	// Wait for the messages
 	timer := time.NewTimer(wait)
-
 	for {
-		// Wait until the timer expires
-		<-timer.C
+		for _, productId := range productIds {
+			select {
+			// See if a message has come in yet
+			case msg, ok := <-channels[productId]:
+				if !ok {
+					// TODO find a nice way to clean this up and not waste messages
+					return
+				}
 
-		aggregates := make([]database.AggregateTransaction, 0, len(ctx.ProductIds))
-		now := time.Now().UnixMicro()
-		for _, productId := range ctx.ProductIds {
-			aggregate := &database.AggregateTransaction{
-				ProductId:             productId,
-				Granularity:           conf.Granularity,
-				TimeStarted:           now,
-				NumTransactionsSeen:   ctx.Done.Len(),
-				NumTransactionsOnBook: Books.Get(productId).Len(),
+				if msg.Sequence > lastSequence[msg.ProductID]+1 {
+					// TODO handle cleaning up nicely
+					// start over
+					lastSequence[msg.ProductID] = msg.Sequence
+					timer.Reset(wait)
+					continue
+				}
+
+				// Bump up the last sequence
+				lastSequence[msg.ProductID]++
+
+				aggregate := aggregateMap[msg.ProductID]
+				// Update the aggregate with the message
+				aggregateMsg(AggregateCtx{
+					Aggregate: aggregate,
+					Open:      open,
+					Prices:    prices,
+					Sizes:     sizes,
+					Times:     times,
+				}, msg)
+
+			case <-timer.C:
+				// Normally don't do this, but lock the book, so we can catch up
+				// Books.lock.Lock()
+
+				// Get ending time
+				now := time.Now().UnixMicro()
+
+				openBuyPrices := make(map[string][]decimal.Decimal)
+				openSellPrices := make(map[string][]decimal.Decimal)
+				openBuySizes := make(map[string][]decimal.Decimal)
+				openSellSizes := make(map[string][]decimal.Decimal)
+				for _, msg := range open {
+					// Add the price and size to the book
+					if msg.Side == "buy" {
+						openBuyPrices[msg.ProductID] = append(openBuyPrices[msg.ProductID], lib.StringToDecimal(msg.Price))
+						openBuySizes[msg.ProductID] = append(openBuySizes[msg.ProductID],
+							lib.StringToDecimal(msg.RemainingSize))
+					} else {
+						openSellPrices[msg.ProductID] = append(openSellPrices[msg.ProductID], lib.StringToDecimal(msg.Price))
+						openSellSizes[msg.ProductID] = append(openSellSizes[msg.ProductID],
+							lib.StringToDecimal(msg.RemainingSize))
+					}
+				}
+
+				// Timer expired, now time to save the aggregate to the db
+				aggregates := make([]database.AggregateTransaction, 0, len(aggregateMap))
+				for _, productId := range productIds {
+					aggregate := aggregateMap[productId]
+					p := prices[productId]
+					s := sizes[productId]
+					t := times[productId]
+					obp := openBuyPrices[productId]
+					obs := openBuySizes[productId]
+					osp := openSellPrices[productId]
+					oss := openSellSizes[productId]
+					sort.Slice(p, func(i, j int) bool {
+						return p[i].LessThan(p[j])
+					})
+					sort.Slice(s, func(i, j int) bool {
+						return s[i].LessThan(s[j])
+					})
+					sort.Slice(t, func(i, j int) bool {
+						return t[i] < t[j]
+					})
+					sort.Slice(obp, func(i, j int) bool {
+						return obp[i].LessThan(obp[j])
+					})
+					sort.Slice(obs, func(i, j int) bool {
+						return obs[i].LessThan(obs[j])
+					})
+					sort.Slice(osp, func(i, j int) bool {
+						return osp[i].LessThan(osp[j])
+					})
+					sort.Slice(oss, func(i, j int) bool {
+						return oss[i].LessThan(oss[j])
+					})
+
+					// Get averages for open data
+					aggregate.AvgOpenBuyPrice = lib.Average(obp)
+					aggregate.AvgOpenBuySize = lib.Average(obs)
+					aggregate.AvgOpenSellPrice = lib.Average(osp)
+					aggregate.AvgOpenSellSize = lib.Average(oss)
+
+					// Get median for open data
+					aggregate.MedianOpenBuyPrice = lib.Median(obp)
+					aggregate.MedianOpenBuySize = lib.Median(obs)
+					aggregate.MedianOpenSellPrice = lib.Median(osp)
+					aggregate.MedianOpenSellSize = lib.Median(oss)
+
+					// Get price data
+					if len(p) > 0 {
+						aggregate.HighestPrice = p[len(p)-1].String()
+						aggregate.LowestPrice = p[0].String()
+					}
+					aggregate.AvgPrice = lib.Average(p)
+					aggregate.MedianPrice = lib.Median(p)
+
+					// Get size data
+					if len(p) > 0 {
+						aggregate.HighestSize = s[len(s)-1].String()
+						aggregate.LowestSize = s[0].String()
+					}
+					aggregate.AvgSize = lib.Average(s)
+					aggregate.MedianSize = lib.Median(s)
+					traded := func(d []decimal.Decimal) string {
+						if len(d) == 0 {
+							return "0"
+						} else if len(d) == 1 {
+							return d[0].String()
+						} else {
+							return decimal.Sum(d[0], s[1:]...).String()
+						}
+					}
+					aggregate.AmtCoinTraded = traded(s)
+
+					// Get time between trades
+					var avg int64 = 0
+					for i := 0; i < len(t)-1; i++ {
+						avg += t[i+1] - t[i]
+					}
+					if avg != 0 {
+						avg /= int64(len(t) - 1)
+					}
+					aggregate.AvgTimeBetweenTrades = avg
+
+					// Set the time we stopped getting new messages
+					aggregate.TimeEnded = now
+
+					aggregates = append(aggregates, *aggregate)
+				}
+
+				// Save the aggregates to the db
+				go db.Create(&aggregates)
+				log.Println("Saved aggregate transactions")
+
+				// Re-initialize the aggregates
+				aggregateMap = initAggregates(productIds, conf.Granularity)
+				open = make(map[string]coinbasepro.Message, 0)
+				prices = make(map[string][]decimal.Decimal, 0)
+				sizes = make(map[string][]decimal.Decimal, 0)
+				times = make(map[string][]int64, 0)
+
+				// Reset the timer
+				timer.Reset(wait)
+			case <-stop:
+				return
+			default:
+				// Nothing has happened, skip to look at the next channel
+				continue
 			}
-			handleOpen(ctx, aggregate, productId)
-			handleDone(ctx, aggregate, productId)
 		}
-
-		db.Create(&aggregates)
-
-		// Reset the timer
-		timer.Reset(wait)
 	}
-
 }

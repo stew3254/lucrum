@@ -9,6 +9,7 @@ require (
 	github.com/pelletier/go-toml v1.8.1
 	github.com/preichenberger/go-coinbasepro/v2 v2.0.5
 	github.com/sevlyar/go-daemon v0.1.5
+	github.com/shopspring/decimal v0.0.0-20200227202807-02e2044944cc
 	github.com/stew3254/ratelimit v0.0.0-20210306225049-9c1a91ee464c
 	golang.org/x/sys v0.0.0-20210112080510-489259a85091 // indirect
 	gorm.io/driver/postgres v1.0.8

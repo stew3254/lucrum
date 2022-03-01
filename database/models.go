@@ -70,45 +70,49 @@ type Transaction struct {
 }
 
 type AggregateTransaction struct {
-	ProductId                string
-	Granularity              int64
-	TimeStarted              int64
-	NumTransactionsSeen      int
-	NumTransactionsOnBook    int
-	NumNewTransactionsOnBook int
-	NumMatches               int
-	NumBuys                  int
-	NumOpenBuys              int
-	NumFilledBuys            int
-	NumSells                 int
-	NumOpenSells             int
-	NumFilledSells           int
-	NumCancelledBuys         int
-	NumCancelledSells        int
-	NumLimitBuys             int
-	NumLimitSells            int
-	NumMarketBuys            int
-	NumMarketSells           int
-	NumTakerBuys             int
-	NumTakerSells            int
-	AmtCoinTraded            string
-	AvgTimeBetweenTrades     int
-	AvgOpenBuyPrice          string
-	AvgOpenSellPrice         string
-	MedianOpenBuyPrice       string
-	MedianOpenSellPrice      string
-	AvgOpenBuySize           string
-	AvgOpenSellSize          string
-	MedianOpenBuySize        string
-	MedianOpenSellSize       string
+	ProductId                     string
+	Granularity                   int64
+	TimeStarted                   int64
+	TimeEnded                     int64
+	NumTransactionsSeen           int
+	NumTransactionsOnBook         int
+	NumNewTransactionsOnBook      int
+	NumNewTransactionsStillOnBook int
+	NumMatches                    int
+	NumBuys                       int
+	NumOpenBuys                   int
+	NumFilledBuys                 int
+	NumSells                      int
+	NumOpenSells                  int
+	NumFilledSells                int
+	NumCancelledBuys              int
+	NumCancelledSells             int
+	NumLimitBuys                  int
+	NumLimitSells                 int
+	NumMarketBuys                 int
+	NumMarketSells                int
+
+	// Time between trades in micro seconds
+	AvgTimeBetweenTrades int64
+
+	// Get open data
+	AvgOpenBuyPrice     string
+	AvgOpenSellPrice    string
+	MedianOpenBuyPrice  string
+	MedianOpenSellPrice string
+	AvgOpenBuySize      string
+	AvgOpenSellSize     string
+	MedianOpenBuySize   string
+	MedianOpenSellSize  string
 
 	// These are all matched prices, not irrelevant ones
-	HighestPrice string
-	LowestPrice  string
-	AvgPrice     string
-	MedianPrice  string
-	HighestSize  string
-	LowestSize   string
-	AvgSize      string
-	MedianSize   string
+	HighestPrice  string
+	LowestPrice   string
+	AvgPrice      string
+	MedianPrice   string
+	HighestSize   string
+	LowestSize    string
+	AvgSize       string
+	MedianSize    string
+	AmtCoinTraded string
 }

@@ -21,6 +21,7 @@ func CreateTables(db *gorm.DB) {
 	lib.Check(db.Migrator().AutoMigrate(&L3OrderMessage{}))
 	lib.Check(db.Migrator().AutoMigrate(&OrderBookSnapshot{}))
 	lib.Check(db.Migrator().AutoMigrate(&Transaction{}))
+	lib.Check(db.Migrator().AutoMigrate(&AggregateTransaction{}))
 	lib.Check(db.Migrator().AutoMigrate(&HistoricalData{}))
 }
 
@@ -101,6 +102,7 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 func DropTables(db *gorm.DB) {
 	// Drop tables in an order that won't invoke errors from foreign key constraints
 	lib.Check(db.Migrator().DropTable(&L3OrderMessage{}))
+	lib.Check(db.Migrator().DropTable(&AggregateTransaction{}))
 	lib.Check(db.Migrator().DropTable(&Transaction{}))
 	lib.Check(db.Migrator().DropTable(&OrderBookSnapshot{}))
 	lib.Check(db.Migrator().DropTable(&HistoricalData{}))
