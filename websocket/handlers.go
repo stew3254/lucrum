@@ -86,6 +86,9 @@ func L3Handler(
 	// Initialize subscription channels
 	SubChans = NewChannels(productIds)
 
+	// Look for the first message saying we're listening for messages
+	<-msgChannel
+
 	// Now we can get the current state of the order books
 	client := &coinbasepro.Client{
 		BaseURL:    botConf.Coinbase.URL,
@@ -129,10 +132,10 @@ func L3Handler(
 		aggregateSequence[k] = v
 	}
 	aggregateStop := make(chan struct{}, 1)
-	alertChan := make(chan struct{}, 1)
+	aggregateAlertChannel := make(chan struct{}, 1)
 	readerStop := make(chan struct{}, 1)
 
-	go AggregateTransactions(wsConf, db, aggregateStop, alertChan, productIds, aggregateSequence)
+	go AggregateTransactions(wsConf, db, aggregateStop, aggregateAlertChannel, productIds, aggregateSequence)
 
 	// Forever look for incoming messages
 	update := func(
@@ -144,10 +147,21 @@ func L3Handler(
 		stop chan struct{},
 		lastSequence int64,
 	) {
+		// Clean up stop channel
 		defer close(stop)
+
+		log.Println("Going to send message")
+
+		log.Println("Sent message")
+
+		// Listen to messages forever
 		for {
 			select {
-			case msg := <-msgChannel:
+			case msg, ok := <-msgChan:
+				if !ok {
+					return
+				}
+
 				// TODO add proper handling for out of order messages
 				// This accounts for gaps in the sequence
 				if msg.Sequence > lastSequence+1 {
@@ -155,6 +169,8 @@ func L3Handler(
 					Books = GetOrderBooks(client, rl, productIds)
 					// Add all entries to the database
 					Books.Save(db)
+					// Fix last sequence
+					lastSequence = msg.Sequence
 				} else if msg.Sequence == lastSequence+1 {
 					// Update the sequence
 					lastSequence = msg.Sequence
@@ -169,7 +185,9 @@ func L3Handler(
 					UpdateOrderBook(Books.Get(msg.ProductID), msg)
 
 					// Update the transactions
-					UpdateTransactions(openTransactions, doneTransactions, msg)
+					if wsConf.StoreTransactions {
+						UpdateTransactions(openTransactions, doneTransactions, msg)
+					}
 				}
 			// Simply ignore old messages
 
@@ -182,26 +200,26 @@ func L3Handler(
 
 	// Spin off the goroutines to listen per product id
 	for _, productId := range productIds {
+		subChan := SubChans.Add(productId)
 		go update(
 			client,
 			rl,
 			openTransactions,
 			doneTransactions,
-			SubChans.Add(productId), // Subscribes to the channel
+			subChan,
 			stopChans[productId],
 			lastSequence[productId],
 		)
 	}
 
+	// Alert this function the aggregate has subscribed using the stop chan
+	<-aggregateAlertChannel
+	close(aggregateAlertChannel)
+
 	// Clean up this map since we don't need it
 	lastSequence = nil
 	aggregateSequence = nil
-
-	// Look for the first message saying we're listening for messages
-	<-msgChannel
-
-	// Alert this function the aggregate has subscribed using the stop chan
-	<-alertChan
+	aggregateAlertChannel = nil
 
 	// Now we're ready to start reading out messages
 	go MsgReader(msgChannel, readerStop)

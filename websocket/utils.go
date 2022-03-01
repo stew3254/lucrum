@@ -36,7 +36,7 @@ func NewChannels(productIds []string) *SubscribedChannels {
 }
 
 func (c *SubscribedChannels) Add(productId string) chan coinbasepro.Message {
-	ch := make(chan coinbasepro.Message, 20)
+	ch := make(chan coinbasepro.Message, 50)
 	c.locks[productId].Lock()
 	c.channels[productId] = append(c.channels[productId], ch)
 	c.locks[productId].Unlock()
@@ -483,6 +483,36 @@ func AggregateTransactions(
 	// Subscribe to the channels
 	channels := MsgSubscribe(productIds)
 
+	// This handles any new messages that were read
+	handleMsg := func(msg coinbasepro.Message, ok bool, lastSequence int64, timer *time.Timer) int64 {
+		if !ok {
+			// TODO find a nice way to clean this up and not waste messages
+			return lastSequence
+		}
+
+		if msg.Sequence > lastSequence+1 {
+			// TODO handle cleaning up nicely
+			// start over
+			lastSequence = msg.Sequence
+			timer.Reset(wait)
+			return lastSequence
+		}
+
+		// Bump up the last sequence
+		lastSequence++
+
+		// Update the aggregate with the message
+		aggregateMsg(AggregateCtx{
+			Aggregate: aggregateMap[msg.ProductID],
+			Open:      open,
+			Prices:    prices,
+			Sizes:     sizes,
+			Times:     times,
+		}, msg)
+
+		return lastSequence
+	}
+
 	// Tell the parent handler it can start the MsgReader
 	alert <- struct{}{}
 
@@ -493,35 +523,26 @@ func AggregateTransactions(
 			select {
 			// See if a message has come in yet
 			case msg, ok := <-channels[productId]:
-				if !ok {
-					// TODO find a nice way to clean this up and not waste messages
-					return
-				}
-
-				if msg.Sequence > lastSequence[msg.ProductID]+1 {
-					// TODO handle cleaning up nicely
-					// start over
-					lastSequence[msg.ProductID] = msg.Sequence
-					timer.Reset(wait)
-					continue
-				}
-
-				// Bump up the last sequence
-				lastSequence[msg.ProductID]++
-
-				aggregate := aggregateMap[msg.ProductID]
-				// Update the aggregate with the message
-				aggregateMsg(AggregateCtx{
-					Aggregate: aggregate,
-					Open:      open,
-					Prices:    prices,
-					Sizes:     sizes,
-					Times:     times,
-				}, msg)
+				lastSequence[msg.ProductID] = handleMsg(msg, ok, lastSequence[msg.ProductID], timer)
 
 			case <-timer.C:
-				// Normally don't do this, but lock the book, so we can catch up
-				// Books.lock.Lock()
+				// Make sure everything is caught up to the book
+				for _, productId := range productIds {
+					// Wait for the book to catch up
+					for lastSequence[productId] > Books.Get(productId).Sequence {
+						// Try to do a short sleep while we wait
+						time.Sleep(time.Millisecond)
+					}
+					// We might have gotten behind the book, so lock it and wait to catch up again
+					Books.lock.RLock()
+					for Books.Get(productId).Sequence > lastSequence[productId] {
+						msg, ok := <-channels[productId]
+						lastSequence[productId] = handleMsg(msg, ok, lastSequence[productId], timer)
+					}
+					// Update the number of transactions on the book
+					aggregateMap[productId].NumTransactionsOnBook = Books.Get(productId).Len()
+					Books.lock.RUnlock()
+				}
 
 				// Get ending time
 				now := time.Now().UnixMicro()
