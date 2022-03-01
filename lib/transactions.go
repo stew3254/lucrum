@@ -1,7 +1,8 @@
-package websocket
+package lib
 
 import (
 	"container/list"
+	"github.com/preichenberger/go-coinbasepro/v2"
 	"lucrum/database"
 	"sync"
 )
@@ -90,10 +91,16 @@ func NewTransactions(productIds []string, books *OrderBook) *Transactions {
 	// Add transactions from the order book
 	if books != nil {
 		for _, productId := range productIds {
-			book := Books.Get(productId)
-			addTransactions := func(l *list.List) {
-				for e := l.Front(); e != nil; e = e.Next() {
-					v := e.Value.(database.OrderBookSnapshot)
+			book := Books.Get(productId, true)
+			buyStop := make(chan struct{})
+			sellStop := make(chan struct{})
+			addTransactions := func(ch <-chan *list.Element, stop chan<- struct{}) {
+				defer func() {
+					stop <- struct{}{}
+					close(stop)
+				}()
+				for elem, ok := <-ch; ok; elem, ok = <-ch {
+					v := elem.Value.(database.OrderBookSnapshot)
 					transaction := &database.Transaction{
 						OrderID:       v.OrderID,
 						ProductId:     v.ProductId,
@@ -107,8 +114,8 @@ func NewTransactions(productIds []string, books *OrderBook) *Transactions {
 					t.Set(v.ProductId, v.OrderID, transaction)
 				}
 			}
-			addTransactions(book.Buys)
-			addTransactions(book.Sells)
+			addTransactions(book.BuysIter(buyStop, true), buyStop)
+			addTransactions(book.SellsIter(sellStop, true), sellStop)
 		}
 	}
 	return t
@@ -121,25 +128,54 @@ func (t *Transactions) Len() int {
 	return l
 }
 
-// Iter takes a channel to alert to stop reading messages
-func (t *Transactions) Iter(productId string, stop <-chan struct{}) (iter chan database.Transaction) {
-	iter = make(chan database.Transaction, 10)
-	go func(stop <-chan struct{}) {
-		t.lock.RLock()
-		// Unlock and clean up the channel at the end
-		defer func() {
-			t.lock.RUnlock()
-			close(iter)
-		}()
-
-		for _, transaction := range t.transactions[productId] {
-			// Write the transaction or stop
-			select {
-			case iter <- *transaction:
-			case <-stop:
-				return
-			}
-		}
-	}(stop)
-	return iter
+func UpdateTransactions(open, done *Transactions, msg coinbasepro.Message) {
+	switch msg.Type {
+	case "received":
+		// Create the new transaction
+		open.Set(msg.ProductID, msg.OrderID, &database.Transaction{
+			OrderID:      msg.OrderID,
+			ProductId:    msg.ProductID,
+			Time:         msg.Time.Time().UnixMicro(),
+			Price:        msg.Price,
+			Side:         msg.Side,
+			Size:         msg.Size,
+			Funds:        msg.Funds,
+			OrderType:    msg.OrderType,
+			AddedToBook:  false,
+			OrderChanged: false,
+		})
+	case "open":
+		// Update the old transaction
+		open.Update(msg.ProductID, msg.OrderID,
+			func(transaction *database.Transaction) {
+				transaction.AddedToBook = true
+				transaction.RemainingSize = msg.RemainingSize
+			})
+	case "done":
+		// Update the old transaction
+		t, _ := open.Get(msg.ProductID, msg.OrderID)
+		t.ClosedAt = msg.Time.Time().UnixMicro()
+		t.Reason = msg.Reason
+		// Add it to done transactions
+		done.Set(msg.ProductID, msg.OrderID, t)
+		// Remove it from the open transactions
+		open.Remove(msg.ProductID, msg.OrderID)
+	case "match":
+		open.Update(msg.ProductID, msg.TakerOrderID,
+			func(transaction *database.Transaction) {
+				transaction.MatchId = msg.MakerOrderID
+			})
+		open.Update(msg.ProductID, msg.MakerOrderID,
+			func(transaction *database.Transaction) {
+				transaction.MatchId = msg.TakerOrderID
+			})
+	case "change":
+		open.Update(msg.ProductID, msg.OrderID,
+			func(transaction *database.Transaction) {
+				transaction.OrderChanged = true
+				transaction.NewSize = msg.NewSize
+			})
+	}
 }
+
+// TODO write save transactions

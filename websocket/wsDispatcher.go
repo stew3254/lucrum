@@ -5,6 +5,7 @@ import (
 	"log"
 	"lucrum/config"
 	"os"
+	"sync"
 
 	"gorm.io/gorm"
 
@@ -37,10 +38,9 @@ func Authenticate(conn *ws.Conn, conf config.Coinbase, msgs []coinbasepro.Messag
 func WSMessageHandler(
 	db *gorm.DB,
 	msgChannel <-chan coinbasepro.Message,
-	stop chan struct{},
+	stop <-chan struct{},
 	handler func(db *gorm.DB, msg coinbasepro.Message),
 ) {
-	defer close(stop)
 	// Forever look for updates
 	var lastSequence int64
 	// Ignore the initial message sent saying we've started listening
@@ -62,10 +62,11 @@ func WSMessageHandler(
 // Read messages out of the websocket
 func readMessages(
 	wsConn *ws.Conn,
-	msgChan chan coinbasepro.Message,
-	errChan chan error,
-	done chan struct{},
+	msgChan chan<- coinbasepro.Message,
+	errChan chan<- error,
+	done <-chan struct{},
 ) {
+	once := sync.Once{}
 	for {
 		// Get the message
 		msg := coinbasepro.Message{}
@@ -84,6 +85,10 @@ func readMessages(
 			errChan <- err
 			return
 		}
+
+		// Only when the first message is read send the start message,
+		// so handlers know that they can read
+		once.Do(func() { msgChan <- coinbasepro.Message{Type: "lucrum_start"} })
 
 		// Send the message
 		msgChan <- msg
@@ -197,13 +202,10 @@ func WSDispatcher(
 	// Create a channel to receive an error over
 	errChan := make(chan error, 1)
 	// Create a channel to signal that we are done
-	done := make(chan struct{}, 1)
-
-	// Send an initial message alerting the channel that we've started listening
-	msgChan <- coinbasepro.Message{Type: "lucrum_start"}
+	readerStopChan := make(chan struct{}, 1)
 
 	// Start the message reader
-	go readMessages(conn, msgChan, errChan, done)
+	go readMessages(conn, msgChan, errChan, readerStopChan)
 
 	// Constantly wait for messages
 	// Then send them to appropriate msgChannels to handle them
@@ -214,6 +216,9 @@ func WSDispatcher(
 			// Find the corresponding Go channel in the map to send the message to
 			msgType := msg.Type
 			switch msg.Type {
+			case "lucrum_start":
+				// Tell the channels that they can start listening
+				msgType = "lucrum_start"
 			case "error":
 				log.Println(msg.Message, msg.Reason)
 			case "snapshot":
@@ -273,6 +278,11 @@ func WSDispatcher(
 				if channel, ok := channels["matches"]; ok {
 					channel <- msg
 				}
+			} else if msgType == "lucrum_start" {
+				// Alert all channels we should start listening
+				for _, ch := range channels {
+					ch <- msg
+				}
 			} else {
 				// If the channel exists, send the message over to the handler
 				if channel, ok := channels[msgType]; ok {
@@ -288,7 +298,13 @@ func WSDispatcher(
 		case <-ctx.Done():
 			log.Println("Received an interrupt. Shutting down gracefully")
 			// Send signal to the message reader that we are done
-			done <- struct{}{}
+			readerStopChan <- struct{}{}
+			close(readerStopChan)
+
+			for _, channel := range msgChannels {
+				stopChannels[channel.Name] <- struct{}{}
+				close(stopChannels[channel.Name])
+			}
 			// Close the connection so the reader sending in the messages errors and dies
 			_ = conn.Close()
 			os.Exit(1)

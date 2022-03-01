@@ -6,7 +6,6 @@ import (
 	"github.com/preichenberger/go-coinbasepro/v2"
 	"log"
 	"lucrum/config"
-	"lucrum/lib"
 	"os"
 	"strings"
 	"time"
@@ -16,13 +15,19 @@ import (
 	"gorm.io/gorm"
 )
 
+func check(err error) {
+	if err != nil {
+		log.Fatalln(err)
+	}
+}
+
 // CreateTables uses the models from models.go to create database tables
 func CreateTables(db *gorm.DB) {
-	lib.Check(db.Migrator().AutoMigrate(&L3OrderMessage{}))
-	lib.Check(db.Migrator().AutoMigrate(&OrderBookSnapshot{}))
-	lib.Check(db.Migrator().AutoMigrate(&Transaction{}))
-	lib.Check(db.Migrator().AutoMigrate(&AggregateTransaction{}))
-	lib.Check(db.Migrator().AutoMigrate(&HistoricalData{}))
+	check(db.Migrator().AutoMigrate(&L3OrderMessage{}))
+	check(db.Migrator().AutoMigrate(&OrderBookSnapshot{}))
+	check(db.Migrator().AutoMigrate(&Transaction{}))
+	check(db.Migrator().AutoMigrate(&AggregateTransaction{}))
+	check(db.Migrator().AutoMigrate(&HistoricalData{}))
 }
 
 // ConnectDB is a simple wrapper to open a GORM DB
@@ -77,7 +82,7 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 					// Try to handle signal interrupts while waiting
 					case <-ctx.Done():
 						log.Println("Received an interrupt. Shutting down gracefully")
-						os.Exit(0)
+						os.Exit(1)
 					// Wait on the timer
 					case <-timer:
 						goto TimeExpired
@@ -101,11 +106,11 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 // added to models.go, they must be placed in here by hand
 func DropTables(db *gorm.DB) {
 	// Drop tables in an order that won't invoke errors from foreign key constraints
-	lib.Check(db.Migrator().DropTable(&L3OrderMessage{}))
-	lib.Check(db.Migrator().DropTable(&AggregateTransaction{}))
-	lib.Check(db.Migrator().DropTable(&Transaction{}))
-	lib.Check(db.Migrator().DropTable(&OrderBookSnapshot{}))
-	lib.Check(db.Migrator().DropTable(&HistoricalData{}))
+	check(db.Migrator().DropTable(&L3OrderMessage{}))
+	check(db.Migrator().DropTable(&AggregateTransaction{}))
+	check(db.Migrator().DropTable(&Transaction{}))
+	check(db.Migrator().DropTable(&OrderBookSnapshot{}))
+	check(db.Migrator().DropTable(&HistoricalData{}))
 }
 
 // ToOrderMessage converts a coinbase message into an L3 compatible order message
