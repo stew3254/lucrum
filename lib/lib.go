@@ -61,7 +61,7 @@ func AlertUser() (err error) {
 	return
 }
 
-func Median(slice []decimal.Decimal) string {
+func MedianDec(slice []decimal.Decimal) string {
 	if len(slice) == 0 {
 		return "0"
 	} else {
@@ -73,7 +73,19 @@ func Median(slice []decimal.Decimal) string {
 	}
 }
 
-func Average(d []decimal.Decimal) string {
+func MedianInt64(slice []int64) int64 {
+	if len(slice) == 0 {
+		return 0
+	} else {
+		if len(slice)&1 == 1 {
+			return slice[(len(slice))/2]
+		} else {
+			return AverageInt64([]int64{slice[(len(slice)-1)/2], slice[(len(slice))/2]})
+		}
+	}
+}
+
+func AverageDec(d []decimal.Decimal) string {
 	if len(d) == 0 {
 		return "0"
 	} else if len(d) == 1 {
@@ -81,6 +93,17 @@ func Average(d []decimal.Decimal) string {
 	} else {
 		return decimal.Avg(d[0], d[1:]...).String()
 	}
+}
+
+func AverageInt64(s []int64) int64 {
+	var avg int64 = 0
+	for i := 0; i < len(s)-1; i++ {
+		avg += s[i+1] - s[i]
+	}
+	if avg != 0 {
+		avg /= int64(len(s))
+	}
+	return avg
 }
 
 func StringToDecimal(s string) decimal.Decimal {

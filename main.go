@@ -9,6 +9,7 @@ import (
 	"lucrum/websocket"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -109,7 +110,11 @@ func run(ctx context.Context, conf config.Config) {
 func main() {
 	// Set up sig handler
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	once := sync.Once{}
+	defer once.Do(stop)
+
+	// Create wait group to wait for children to finish
+	wg := &sync.WaitGroup{}
 
 	// Load in config file
 	conf, err := config.Parse()
@@ -146,12 +151,21 @@ func main() {
 
 		// Have to pass in channels due to the weird way the coinbase channels work
 		// It doesn't let you differentiate between user and full channels
-		websocket.WSDispatcher(ctx, conf, DB, conf.Conf.Ws.Channels)
+		wg.Add(1)
+		websocket.WSDispatcher(ctx, wg, conf, DB, conf.Conf.Ws.Channels)
+		select {
+		case <-ctx.Done():
+			log.Println("Received an interrupt. Shutting down gracefully")
+		default:
+			once.Do(stop)
+		}
+		wg.Wait()
+		os.Exit(1)
 	}
 
 	// See if we need to daemonize
 	if conf.Daemon.Daemonize {
-		runner := func(ctx context.Context, coinbaseConf config.Config, child *os.Process) {
+		runner := func(ctx context.Context, wg *sync.WaitGroup, coinbaseConf config.Config, child *os.Process) {
 			// Run the real program if it's the child
 			// If it's the parent we are done and can exit the program
 			if child == nil {
@@ -170,7 +184,7 @@ func main() {
 		}
 
 		// Daemonize now
-		daemonize(ctx, conf, conf.Daemon, runner)
+		daemonize(ctx, wg, conf, conf.Daemon, runner)
 
 		// We don't want to call run() and will return here
 		return
@@ -179,7 +193,7 @@ func main() {
 	// Check if we should daemonize the websocket
 	if conf.WsDaemon.Daemonize {
 		log.Println("Daemonizing websocket dispatcher")
-		daemonize(ctx, conf, conf.WsDaemon, wsDaemonHelper)
+		daemonize(ctx, wg, conf, conf.WsDaemon, wsDaemonHelper)
 	}
 
 	// Run the main part of the program

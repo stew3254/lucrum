@@ -1,7 +1,9 @@
 package websocket
 
 import (
+	"context"
 	"github.com/preichenberger/go-coinbasepro/v2"
+	"log"
 	"sync"
 )
 
@@ -47,12 +49,16 @@ func (c *SubscribedChannels) Remove(productId string, ch chan coinbasepro.Messag
 	c.locks[productId].Unlock()
 }
 
-func (c *SubscribedChannels) Send(productId string, msg coinbasepro.Message) {
+func (c *SubscribedChannels) Send(ctx context.Context, productId string, msg coinbasepro.Message) {
+	defer c.locks[productId].RUnlock()
 	c.locks[productId].RLock()
 	for _, ch := range c.channels[productId] {
-		ch <- msg
+		select {
+		case ch <- msg:
+		case <-ctx.Done():
+			return
+		}
 	}
-	c.locks[productId].RUnlock()
 }
 
 func MsgSubscribe(productIds []string) map[string]chan coinbasepro.Message {
@@ -70,23 +76,26 @@ func MsgUnsubscribe(chanMap map[string]chan coinbasepro.Message) {
 }
 
 func MsgReader(
+	ctx context.Context,
+	wg *sync.WaitGroup,
 	msgChan chan coinbasepro.Message,
 	lastSequence map[string]int64,
-	stop <-chan struct{},
 ) {
+	defer func() {
+		log.Println("Closed subscribed message broadcaster")
+		wg.Done()
+	}()
 	for {
 		select {
 		case msg, ok := <-msgChan:
-			if ok {
-				if msg.Sequence > lastSequence[msg.ProductID] {
-					SubChans.Send(msg.ProductID, msg)
-				}
-				// Ignore any old messages
-			} else {
-				// Channel doesn't work, so return
+			if !ok {
 				return
 			}
-		case <-stop:
+			// Ignore old messages and only send new ones
+			if msg.Sequence > lastSequence[msg.ProductID] {
+				SubChans.Send(ctx, msg.ProductID, msg)
+			}
+		case <-ctx.Done():
 			return
 		}
 	}

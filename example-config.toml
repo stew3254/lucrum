@@ -28,6 +28,9 @@ channels = [
         #    { name = "user", product_ids = ["BTC-USD"] },
         #    { name = "full", product_ids = ["BTC-USD"] }
 ]
+granularity = 60
+raw_mesaages = false
+store_transactions = false #Not implemnted yet
 
 # Database information
 [conf.production.database]

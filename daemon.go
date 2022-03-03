@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 
 	"github.com/sevlyar/go-daemon"
@@ -18,12 +19,13 @@ import (
 // Creates a daemon that runs the helper function supplied
 func daemonize(
 	ctx context.Context,
+	wg *sync.WaitGroup,
 	config config.Config,
 	daemonConf config.Daemon,
-	helper func(context.Context, config.Config, *os.Process),
+	helper func(context.Context, *sync.WaitGroup, config.Config, *os.Process),
 ) {
 
-	// Creat pid file path
+	// Create pid file path
 	dir, _ := filepath.Split(daemonConf.PidFile)
 	err := os.MkdirAll(dir, 0755)
 	if err != nil {
@@ -78,18 +80,18 @@ func daemonize(
 	lib.Check(err)
 
 	// Run on daemonize
-	helper(ctx, config, child)
+	helper(ctx, wg, config, child)
 
 	// Release the daemon
 	err = daemonCtx.Release()
 	lib.Check(err)
 }
 
-func wsDaemonHelper(ctx context.Context, conf config.Config, child *os.Process) {
+func wsDaemonHelper(ctx context.Context, wg *sync.WaitGroup, conf config.Config, child *os.Process) {
 	// This is the child
 	if child == nil {
 		// Call the dispatcher
-		websocket.WSDispatcher(ctx, conf, DB, conf.Conf.Ws.Channels)
+		websocket.WSDispatcher(ctx, wg, conf, DB, conf.Conf.Ws.Channels)
 	}
 	// On parent we just return, because more work might need to be done
 }

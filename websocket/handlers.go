@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/stew3254/ratelimit"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"lucrum/database"
 	"lucrum/lib"
 	"net/http"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -45,12 +47,25 @@ func HandleMatches(db *gorm.DB, msg coinbasepro.Message) {
 
 // L2Handler handles data from the level 2 order book
 func L2Handler(
+	ctx context.Context,
+	wg *sync.WaitGroup,
 	db *gorm.DB,
 	msgChannel chan coinbasepro.Message,
-	stop chan struct{},
 ) {
-	// Ignore the initial message sent saying we've started listening
-	<-msgChannel
+	defer func() {
+		log.Println("Closed L2 handler")
+		wg.Done()
+	}()
+
+	// Ignore the initial message sent saying we've started listening or close since interrupted
+	select {
+	case _, ok := <-msgChannel:
+		if !ok {
+			return
+		}
+	case <-ctx.Done():
+		return
+	}
 
 	// Forever look for updates
 	var lastSequence int64
@@ -65,9 +80,8 @@ func L2Handler(
 					log.Println(err)
 				}
 				log.Println(string(out))
-
 			}
-		case <-stop:
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -75,13 +89,20 @@ func L2Handler(
 
 // L3Handler handles level 3 order book data
 func L3Handler(
+	ctx context.Context,
+	wg *sync.WaitGroup,
 	botConf config.Bot,
 	wsConf config.Websocket,
 	db *gorm.DB,
 	msgChannel chan coinbasepro.Message,
-	stop <-chan struct{},
 	productIds []string,
 ) {
+	// Tell the parent when we're done
+	defer func() {
+		log.Println("Cleaned up L3 Handler")
+		wg.Done()
+	}()
+
 	// Initialize subscription channels
 	SubChans = NewChannels(productIds)
 
@@ -108,12 +129,21 @@ func L3Handler(
 	// Look for the first message saying we're listening for messages
 	// Must do this before getting the order book, so we don't miss messages
 	// We can skip old ones, but you can't make up missed ones
-	<-msgChannel
+	select {
+	case _, ok := <-msgChannel:
+		if !ok {
+			return
+		}
+	case <-ctx.Done():
+		return
+	}
 
 	// Get the order books
+	log.Println("Getting order book")
 	lib.GetOrderBooks(&lib.Books, client, rl, productIds)
+	log.Println("Order book created")
 	// Add all entries to the database
-	go lib.Books.Save(db, true)
+	lib.Books.Save(db, true)
 
 	var openTransactions *lib.Transactions
 	var doneTransactions *lib.Transactions
@@ -127,38 +157,66 @@ func L3Handler(
 	lastSequence := make(map[string]int64)
 	aggregateSequence := make(map[string]int64)
 	readerSequence := make(map[string]int64)
-	stopChans := make(map[string]chan struct{})
 	for _, productId := range productIds {
 		seq := lib.Books.Get(productId, true).GetSequence(true)
 		lastSequence[productId] = seq
 		aggregateSequence[productId] = seq
 		readerSequence[productId] = seq
-		stopChans[productId] = make(chan struct{}, 1)
 	}
 
 	// Aggregate transactions and save them to the db
-	aggregateStop := make(chan struct{}, 1)
 	aggregateAlertChannel := make(chan struct{}, 1)
-	readerStop := make(chan struct{}, 1)
+
 	// Spin off aggregate as a separate goroutine to listen to incoming messages
-	go AggregateTransactions(wsConf, db, aggregateStop, aggregateAlertChannel, productIds, aggregateSequence)
+	wg.Add(1)
+	go AggregateTransactions(
+		ctx,
+		wg,
+		wsConf,
+		db,
+		aggregateAlertChannel,
+		productIds,
+		aggregateSequence,
+	)
 
 	// Function to update the order book and possibly update transactions
 	handleMsg := func(
+		ctx context.Context,
+		wg *sync.WaitGroup,
 		client *coinbasepro.Client,
 		rl *ratelimit.RateLimiter,
 		openTransactions *lib.Transactions,
 		doneTransactions *lib.Transactions,
 		msgChan <-chan coinbasepro.Message,
-		stop chan struct{},
 		lastSequence int64,
 	) {
+		bufSize := 500
+		var msgBuf []database.L3OrderMessage
+		// Queue messages in a buffer before storing them in bulk
+		if wsConf.RawMessages {
+			msgBuf = make([]database.L3OrderMessage, bufSize)
+		}
+		done := func(count int) {
+			// Save leftover messages to the database
+			if wsConf.RawMessages && count > 0 {
+				buf := msgBuf[:count]
+				db.Save(&buf)
+				log.Println("Saved leftover l3 messages", count)
+			}
+			log.Println("L3 msg consumer finished")
+			// Alert the parent we're done
+			wg.Done()
+		}
+
+		log.Println("Handling L3 messages now")
 		// Listen to messages forever
+		count := 0
 		for {
 			select {
 			case msg, ok := <-msgChan:
 				// If the channel is closed just return
 				if !ok {
+					done(count)
 					return
 				}
 
@@ -178,7 +236,12 @@ func L3Handler(
 					// Save the message to the database if we want raw messages
 					if wsConf.RawMessages {
 						m := database.ToOrderMessage(msg)
-						go db.Create(&m)
+						msgBuf[count] = m
+						count = (count + 1) % bufSize
+						if count == 0 {
+							// Save the messages to the database
+							db.Save(&msgBuf)
+						}
 					}
 
 					// Update the order book
@@ -191,8 +254,8 @@ func L3Handler(
 				}
 			// Simply ignore old messages
 
-			// If told to stop, make sure to end
-			case <-stop:
+			case <-ctx.Done():
+				done(count)
 				return
 			}
 		}
@@ -203,51 +266,62 @@ func L3Handler(
 		// Subscribe to the subchan in this thread, so we know it's been added before spinning
 		// off the goroutine and then the MsgReader
 		subChan := SubChans.Add(productId)
+		wg.Add(1)
 		go handleMsg(
+			ctx,
+			wg,
 			client,
 			rl,
 			openTransactions,
 			doneTransactions,
 			subChan,
-			stopChans[productId],
 			lastSequence[productId],
 		)
 	}
 
 	// Make sure the aggregate function is running and ready to listen for incoming messages
 	// This way no messages get dropped
-	<-aggregateAlertChannel
+	select {
+	case _, ok := <-aggregateAlertChannel:
+		if !ok {
+			return
+		}
+	case <-ctx.Done():
+		return
+	}
 
 	// Clean up stuff since we don't need it anymore
 	lastSequence = nil
 	aggregateSequence = nil
 	aggregateAlertChannel = nil
 
-	// Now we're ready to start reading out messages
-	go MsgReader(msgChannel, readerSequence, readerStop)
-
-	// Wait on the stop message to alert all the other child goroutines
-	select {
-	case <-stop:
-		aggregateStop <- struct{}{}
-		readerStop <- struct{}{}
-		close(aggregateStop)
-		close(readerStop)
-		// Tell all the other goroutines to close
-		for _, productId := range productIds {
-			stopChans[productId] <- struct{}{}
-			close(stopChans[productId])
-		}
-		return
-	}
+	// Now we're ready to read out all messages
+	wg.Add(1)
+	MsgReader(ctx, wg, msgChannel, readerSequence)
 }
 
 // UserHandler handles full messages only concerning the authenticated user
 func UserHandler(
+	ctx context.Context,
+	wg *sync.WaitGroup,
 	db *gorm.DB,
 	msgChannel chan coinbasepro.Message,
-	stop <-chan struct{},
 ) {
+	defer func() {
+		log.Println("Closed user handler")
+		wg.Done()
+	}()
+
+	// Ignore the initial message sent saying we've started listening or close since interrupted
+	select {
+	case _, ok := <-msgChannel:
+		if !ok {
+			return
+		}
+	case <-ctx.Done():
+		return
+	}
+
 	// Forever look for updates
 	var lastSequence int64
 	for {
@@ -262,7 +336,7 @@ func UserHandler(
 				}
 				log.Println(string(out))
 			}
-		case <-stop:
+		case <-ctx.Done():
 			return
 		}
 	}

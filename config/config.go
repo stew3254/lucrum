@@ -21,7 +21,7 @@ type Coinbase struct {
 // Websocket contains the list of channels to subscribe with and what info to store
 type Websocket struct {
 	Channels          []coinbasepro.MessageChannel `json:"channels"`
-	Granularity       int64                        `json:"granularity"`
+	Granularity       int                          `json:"granularity"`
 	RawMessages       bool                         `json:"raw_messages"`
 	StoreTransactions bool                         `json:"store_transactions"`
 }
@@ -114,6 +114,17 @@ func Parse() (conf Config, err error) {
 		conf.Conf.IsSandbox = true
 	} else if cli.UnSandbox {
 		conf.Conf.IsSandbox = false
+	}
+
+	// Override websocket behavior
+	if cli.Granularity > 0 {
+		conf.Conf.Ws.Granularity = cli.Granularity
+	}
+	if cli.RawMessages {
+		conf.Conf.Ws.RawMessages = cli.RawMessages
+	}
+	if cli.StoreTransactions {
+		conf.Conf.Ws.StoreTransactions = cli.StoreTransactions
 	}
 
 	return

@@ -1,12 +1,11 @@
 package database
 
 type L3OrderMessage struct {
-	Id            int64  `gorm:"type:int; primaryKey; not null"`
+	Sequence      int64  `gorm:"type:int; primaryKey; not null"`
 	Type          string `gorm:"type:text; not null"`
 	ProductID     string `gorm:"type:text; not null"`
 	TradeID       int    `gorm:"type:int"`
 	OrderID       string `gorm:"type:varchar(128)"`
-	Sequence      int64  `gorm:"type:int; default:0; not null"`
 	MakerOrderID  string `gorm:"type:varchar(128)"`
 	TakerOrderID  string `gorm:"type:varchar(128)"`
 	Time          int64  `gorm:"type:int"`
@@ -70,49 +69,48 @@ type Transaction struct {
 }
 
 type AggregateTransaction struct {
-	ProductId                     string
-	Granularity                   int64
-	TimeStarted                   int64
-	TimeEnded                     int64
-	NumTransactionsSeen           int
-	NumTransactionsOnBook         int
-	NumNewTransactionsOnBook      int
-	NumNewTransactionsStillOnBook int
-	NumMatches                    int
-	NumBuys                       int
-	NumOpenBuys                   int
-	NumFilledBuys                 int
-	NumSells                      int
-	NumOpenSells                  int
-	NumFilledSells                int
-	NumCancelledBuys              int
-	NumCancelledSells             int
-	NumLimitBuys                  int
-	NumLimitSells                 int
-	NumMarketBuys                 int
-	NumMarketSells                int
-
-	// Time between trades in micro seconds
-	AvgTimeBetweenTrades int64
+	ProductId                     string `gorm:"type:varchar(8); not null"`
+	Granularity                   int    `gorm:"type:integer; not null"`
+	TimeStarted                   int64  `gorm:"type:integer; not null"`
+	TimeEnded                     int64  `gorm:"type:integer; not null"`
+	FirstSequence                 int64  `gorm:"type:integer; not null"`
+	LastSequence                  int64  `gorm:"type:integer; not null"`
+	NumTransactionsSeen           int    `gorm:"type:integer; not null"`
+	NumTransactionsOnBook         int    `gorm:"type:integer; not null"`
+	NumNewTransactionsOnBook      int    `gorm:"type:integer; not null"`
+	NumNewTransactionsStillOnBook int    `gorm:"type:integer; not null"`
+	NumMatches                    int    `gorm:"type:integer; not null"`
+	NumBuys                       int    `gorm:"type:integer; not null"`
+	NumOpenBuys                   int    `gorm:"type:integer; not null"`
+	NumFilledBuys                 int    `gorm:"type:integer; not null"`
+	NumSells                      int    `gorm:"type:integer; not null"`
+	NumOpenSells                  int    `gorm:"type:integer; not null"`
+	NumFilledSells                int    `gorm:"type:integer; not null"`
+	NumCancelledBuys              int    `gorm:"type:integer; not null"`
+	NumCancelledSells             int    `gorm:"type:integer; not null"`
+	NumLimitBuys                  int    `gorm:"type:integer; not null"`
+	NumLimitSells                 int    `gorm:"type:integer; not null"`
+	NumMarketBuys                 int    `gorm:"type:integer; not null"`
+	NumMarketSells                int    `gorm:"type:integer; not null"`
 
 	// Get open data
-	AvgOpenBuyPrice     string
-	AvgOpenSellPrice    string
-	MedianOpenBuyPrice  string
-	MedianOpenSellPrice string
-	AvgOpenBuySize      string
-	AvgOpenSellSize     string
-	MedianOpenBuySize   string
-	MedianOpenSellSize  string
+	AvgOpenBuyPrice     string `gorm:"type:text; not null"`
+	AvgOpenSellPrice    string `gorm:"type:text; not null"`
+	MedianOpenBuyPrice  string `gorm:"type:text; not null"`
+	MedianOpenSellPrice string `gorm:"type:text; not null"`
+	AvgOpenBuySize      string `gorm:"type:text; not null"`
+	AvgOpenSellSize     string `gorm:"type:text; not null"`
+	MedianOpenBuySize   string `gorm:"type:text; not null"`
+	MedianOpenSellSize  string `gorm:"type:text; not null"`
 
 	// These are all matched prices, not irrelevant ones
-	HighestPrice  string
-	LowestPrice   string
-	AvgPrice      string
-	MedianPrice   string
-	HighestSize   string
-	LowestSize    string
-	AvgSize       string
-	MedianSize    string
-	AmtCoinTraded string
+	HighestPrice  string `gorm:"type:text; not null"`
+	LowestPrice   string `gorm:"type:text; not null"`
+	AvgPrice      string `gorm:"type:text; not null"`
+	MedianPrice   string `gorm:"type:text; not null"`
+	HighestSize   string `gorm:"type:text; not null"`
+	LowestSize    string `gorm:"type:text; not null"`
+	AvgSize       string `gorm:"type:text; not null"`
+	MedianSize    string `gorm:"type:text; not null"`
+	AmtCoinTraded string `gorm:"type:text; not null"`
 }

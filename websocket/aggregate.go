@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"context"
 	"github.com/preichenberger/go-coinbasepro/v2"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -9,18 +10,21 @@ import (
 	"lucrum/database"
 	"lucrum/lib"
 	"sort"
+	"sync"
 	"time"
 )
 
-func initAggregates(productIds []string, granularity int64) (m map[string]*database.AggregateTransaction) {
+func initAggregates(productIds []string, granularity int) (m map[string]*database.
+	AggregateTransaction) {
 	m = make(map[string]*database.AggregateTransaction)
-	now := time.Now().UnixMicro()
 	for _, productId := range productIds {
 		m[productId] = &database.AggregateTransaction{
 			ProductId:                     productId,
 			Granularity:                   granularity,
-			TimeStarted:                   now,
+			TimeStarted:                   0,
 			TimeEnded:                     0,
+			FirstSequence:                 0,
+			LastSequence:                  0,
 			NumTransactionsSeen:           0,
 			NumTransactionsOnBook:         0,
 			NumNewTransactionsOnBook:      0,
@@ -38,7 +42,6 @@ func initAggregates(productIds []string, granularity int64) (m map[string]*datab
 			NumLimitSells:                 0,
 			NumMarketBuys:                 0,
 			NumMarketSells:                0,
-			AvgTimeBetweenTrades:          0,
 			AvgOpenBuyPrice:               "0",
 			AvgOpenSellPrice:              "0",
 			MedianOpenBuyPrice:            "0",
@@ -66,11 +69,23 @@ type AggregateCtx struct {
 	Open      map[string]coinbasepro.Message
 	Prices    map[string][]decimal.Decimal
 	Sizes     map[string][]decimal.Decimal
-	Times     map[string][]int64
 }
 
 func aggregateMsg(ctx AggregateCtx, msg coinbasepro.Message) {
-	ctx.Times[msg.ProductID] = append(ctx.Times[msg.ProductID], msg.Time.Time().UnixMicro())
+	// Set first sequence only if not set
+	if ctx.Aggregate.FirstSequence == 0 {
+		ctx.Aggregate.FirstSequence = msg.Sequence
+	}
+	// Always set last sequence
+	ctx.Aggregate.LastSequence = msg.Sequence
+
+	// Set time started if not set
+	if ctx.Aggregate.TimeStarted == 0 {
+		ctx.Aggregate.TimeStarted = msg.Time.Time().UnixMicro()
+	}
+
+	// Always set last time
+	ctx.Aggregate.TimeEnded = msg.Time.Time().UnixMicro()
 
 	switch msg.Type {
 	case "received":
@@ -136,13 +151,20 @@ func aggregateMsg(ctx AggregateCtx, msg coinbasepro.Message) {
 // based on the live messages that come in. At a defined granularity it will stop and wait
 // until the timer is up to then finish computing and save to the database
 func AggregateTransactions(
+	ctx context.Context,
+	wg *sync.WaitGroup,
 	conf config.Websocket,
 	db *gorm.DB,
-	stop <-chan struct{},
 	alert chan<- struct{},
 	productIds []string,
 	lastSequence map[string]int64,
 ) {
+	// Tell the parent we're done
+	defer func() {
+		log.Println("Shut down aggregator")
+		wg.Done()
+	}()
+
 	// Create the timer
 	wait := time.Duration(conf.Granularity) * time.Second
 
@@ -184,14 +206,17 @@ func AggregateTransactions(
 			Open:      open,
 			Prices:    prices,
 			Sizes:     sizes,
-			Times:     times,
 		}, msg)
 
 		return lastSequence
 	}
 
 	// Tell the parent handler it can start the MsgReader
-	alert <- struct{}{}
+	select {
+	case alert <- struct{}{}:
+	case <-ctx.Done():
+		return
+	}
 
 	// Wait for the messages
 	timer := time.NewTimer(wait)
@@ -213,16 +238,18 @@ func AggregateTransactions(
 					// We might have gotten behind the book, so lock it and wait to catch up again
 					lib.Books.Lock.RLock()
 					for lib.Books.Get(productId, false).GetSequence(true) > lastSequence[productId] {
-						msg, ok := <-channels[productId]
-						lastSequence[productId] = handleMsg(msg, ok, lastSequence[productId], timer)
+						// Wait for more messages to catch up but die if interrupted
+						select {
+						case msg, ok := <-channels[productId]:
+							lastSequence[productId] = handleMsg(msg, ok, lastSequence[productId], timer)
+						case <-ctx.Done():
+							return
+						}
 					}
 					// Update the number of transactions on the book
 					aggregateMap[productId].NumTransactionsOnBook = lib.Books.Get(productId, false).Len(true)
 					lib.Books.Lock.RUnlock()
 				}
-
-				// Get ending time
-				now := time.Now().UnixMicro()
 
 				openBuyPrices := make(map[string][]decimal.Decimal)
 				openSellPrices := make(map[string][]decimal.Decimal)
@@ -275,32 +302,32 @@ func AggregateTransactions(
 					})
 
 					// Get averages for open data
-					aggregate.AvgOpenBuyPrice = lib.Average(obp)
-					aggregate.AvgOpenBuySize = lib.Average(obs)
-					aggregate.AvgOpenSellPrice = lib.Average(osp)
-					aggregate.AvgOpenSellSize = lib.Average(oss)
+					aggregate.AvgOpenBuyPrice = lib.AverageDec(obp)
+					aggregate.AvgOpenBuySize = lib.AverageDec(obs)
+					aggregate.AvgOpenSellPrice = lib.AverageDec(osp)
+					aggregate.AvgOpenSellSize = lib.AverageDec(oss)
 
 					// Get median for open data
-					aggregate.MedianOpenBuyPrice = lib.Median(obp)
-					aggregate.MedianOpenBuySize = lib.Median(obs)
-					aggregate.MedianOpenSellPrice = lib.Median(osp)
-					aggregate.MedianOpenSellSize = lib.Median(oss)
+					aggregate.MedianOpenBuyPrice = lib.MedianDec(obp)
+					aggregate.MedianOpenBuySize = lib.MedianDec(obs)
+					aggregate.MedianOpenSellPrice = lib.MedianDec(osp)
+					aggregate.MedianOpenSellSize = lib.MedianDec(oss)
 
 					// Get price data
 					if len(p) > 0 {
 						aggregate.HighestPrice = p[len(p)-1].String()
 						aggregate.LowestPrice = p[0].String()
 					}
-					aggregate.AvgPrice = lib.Average(p)
-					aggregate.MedianPrice = lib.Median(p)
+					aggregate.AvgPrice = lib.AverageDec(p)
+					aggregate.MedianPrice = lib.MedianDec(p)
 
 					// Get size data
 					if len(p) > 0 {
 						aggregate.HighestSize = s[len(s)-1].String()
 						aggregate.LowestSize = s[0].String()
 					}
-					aggregate.AvgSize = lib.Average(s)
-					aggregate.MedianSize = lib.Median(s)
+					aggregate.AvgSize = lib.AverageDec(s)
+					aggregate.MedianSize = lib.MedianDec(s)
 					traded := func(d []decimal.Decimal) string {
 						if len(d) == 0 {
 							return "0"
@@ -311,19 +338,6 @@ func AggregateTransactions(
 						}
 					}
 					aggregate.AmtCoinTraded = traded(s)
-
-					// Get time between trades
-					var avg int64 = 0
-					for i := 0; i < len(t)-1; i++ {
-						avg += t[i+1] - t[i]
-					}
-					if avg != 0 {
-						avg /= int64(len(t) - 1)
-					}
-					aggregate.AvgTimeBetweenTrades = avg
-
-					// Set the time we stopped getting new messages
-					aggregate.TimeEnded = now
 
 					aggregates = append(aggregates, *aggregate)
 				}
@@ -337,11 +351,10 @@ func AggregateTransactions(
 				open = make(map[string]coinbasepro.Message, 0)
 				prices = make(map[string][]decimal.Decimal, 0)
 				sizes = make(map[string][]decimal.Decimal, 0)
-				times = make(map[string][]int64, 0)
 
 				// Reset the timer
 				timer.Reset(wait)
-			case <-stop:
+			case <-ctx.Done():
 				return
 			default:
 				// Nothing has happened, skip to look at the next channel

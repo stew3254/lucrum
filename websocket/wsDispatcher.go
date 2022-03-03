@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"lucrum/config"
-	"os"
 	"sync"
 
 	"gorm.io/gorm"
@@ -36,15 +35,30 @@ func Authenticate(conn *ws.Conn, conf config.Coinbase, msgs []coinbasepro.Messag
 
 // WSMessageHandler is a wrapper for simple handlers that only handle a message at a time
 func WSMessageHandler(
+	ctx context.Context,
+	wg *sync.WaitGroup,
 	db *gorm.DB,
 	msgChannel <-chan coinbasepro.Message,
-	stop <-chan struct{},
 	handler func(db *gorm.DB, msg coinbasepro.Message),
 ) {
+	defer func() {
+		log.Println("Closed message handler")
+		wg.Done()
+	}()
+
 	// Forever look for updates
 	var lastSequence int64
-	// Ignore the initial message sent saying we've started listening
-	<-msgChannel
+
+	// Ignore the initial message sent saying we've started listening or close since interrupted
+	select {
+	case _, ok := <-msgChannel:
+		if !ok {
+			return
+		}
+	case <-ctx.Done():
+		return
+	}
+
 	for {
 		select {
 		case msg := <-msgChannel:
@@ -53,19 +67,28 @@ func WSMessageHandler(
 			if msg.Sequence == 0 || msg.Sequence > lastSequence {
 				handler(db, msg)
 			}
-		case <-stop:
+		case <-ctx.Done():
 			return
 		}
 	}
 }
 
 // Read messages out of the websocket
-func readMessages(
+func readMsgs(
+	ctx context.Context,
+	wg *sync.WaitGroup,
 	wsConn *ws.Conn,
 	msgChan chan<- coinbasepro.Message,
 	errChan chan<- error,
-	done <-chan struct{},
 ) {
+	defer func() {
+		// Clean up and alert the parent we're done
+		_ = wsConn.Close()
+		close(msgChan)
+		close(errChan)
+		log.Println("Closed websocket reader")
+		wg.Done()
+	}()
 	once := sync.Once{}
 	for {
 		// Get the message
@@ -75,15 +98,12 @@ func readMessages(
 		if err := wsConn.ReadJSON(&msg); err != nil {
 			select {
 			// This was closed normally, it's not a real error
-			case <-done:
+			case <-ctx.Done():
 				return
-			// This was not closed normally, it's a real error
-			default:
-			}
-			log.Println(err)
 			// Send the error back
-			errChan <- err
-			return
+			case errChan <- err:
+				return
+			}
 		}
 
 		// Only when the first message is read send the start message,
@@ -91,7 +111,11 @@ func readMessages(
 		once.Do(func() { msgChan <- coinbasepro.Message{Type: "lucrum_start"} })
 
 		// Send the message
-		msgChan <- msg
+		select {
+		case msgChan <- msg:
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
@@ -100,10 +124,17 @@ func readMessages(
 // it sends its messages to
 func WSDispatcher(
 	ctx context.Context,
+	wg *sync.WaitGroup,
 	conf config.Config,
 	db *gorm.DB,
 	msgChannels []coinbasepro.MessageChannel,
 ) {
+	// Tell the parent we're done
+	defer func() {
+		log.Println("Closed Websocket Dispatcher")
+		wg.Done()
+	}()
+
 	// Get bot configuration
 	var botConf config.Bot
 	if conf.Conf.IsSandbox {
@@ -121,40 +152,32 @@ func WSDispatcher(
 
 	// First filter our duplicate msgChannels
 	channels := make(map[string]chan coinbasepro.Message)
-	stopChannels := make(map[string]chan struct{})
 	for _, channel := range msgChannels {
 		// Just see if the channel is in the map
 		if _, ok := channels[channel.Name]; !ok {
-			// Create a stop channel
-			stopChannels[channel.Name] = make(chan struct{}, 1)
+			// Add to the wait group
+			wg.Add(1)
 			// Create a new buffered channel.
-			if channel.Name == "full" {
-				// We can hold up to 250 messages which is maybe like 2-3 seconds worth
-				// Probably will never reach this limit. This is good so we hopefully never block
-				channels[channel.Name] = make(chan coinbasepro.Message, 250)
-			} else {
-				// We can hold up to 50 messages which is like a few seconds worth for most channels
-				// Probably will never reach this limit. This is good so we hopefully never block
-				channels[channel.Name] = make(chan coinbasepro.Message, 50)
-			}
+			// We can hold up to 50 messages which is like a few seconds worth for most channels
+			channels[channel.Name] = make(chan coinbasepro.Message, 50)
 			// Figure out which function to spawn with corresponding channel
 			switch channel.Name {
 			case "heartbeat":
-				go WSMessageHandler(db, channels[channel.Name], stopChannels[channel.Name], HandleHeartbeat)
+				go WSMessageHandler(ctx, wg, db, channels[channel.Name], HandleHeartbeat)
 			case "status":
-				go WSMessageHandler(db, channels[channel.Name], stopChannels[channel.Name], HandleStatus)
+				go WSMessageHandler(ctx, wg, db, channels[channel.Name], HandleStatus)
 			case "ticker":
-				go WSMessageHandler(db, channels[channel.Name], stopChannels[channel.Name], HandleTicker)
+				go WSMessageHandler(ctx, wg, db, channels[channel.Name], HandleTicker)
 			case "level2":
-				go L2Handler(db, channels[channel.Name], stopChannels[channel.Name])
+				go L2Handler(ctx, wg, db, channels[channel.Name])
 			case "user":
 				// In case multiple have been passed in, ignore them
 				if !seenUser {
 					seenUser = true
-					go UserHandler(db, channels[channel.Name], stopChannels[channel.Name])
+					go UserHandler(ctx, wg, db, channels[channel.Name])
 				}
 			case "matches":
-				go WSMessageHandler(db, channels[channel.Name], stopChannels[channel.Name], HandleMatches)
+				go WSMessageHandler(ctx, wg, db, channels[channel.Name], HandleMatches)
 			case "full":
 				// Since full channel and user channel look the same,
 				// this is the only decent method of confirming they are different
@@ -164,15 +187,17 @@ func WSDispatcher(
 					delete(channels, channel.Name)
 					// Create a new dispatcher to explicitly handle this
 					newMsgChannels := []coinbasepro.MessageChannel{channel}
-					go WSDispatcher(ctx, conf, db, newMsgChannels)
+					// TODO Figure out clean way to make these communicate with each other
+					go WSDispatcher(ctx, wg, conf, db, newMsgChannels)
 				} else if !seenUser {
 					// Normal usage here
 					go L3Handler(
+						ctx,
+						wg,
 						botConf,
 						conf.Conf.Ws,
 						db,
 						channels[channel.Name],
-						stopChannels[channel.Name],
 						channel.ProductIds,
 					)
 				}
@@ -198,21 +223,36 @@ func WSDispatcher(
 	}
 
 	// Create a channel to send the messages over
-	msgChan := make(chan coinbasepro.Message, 10)
+	msgChan := make(chan coinbasepro.Message, 50)
 	// Create a channel to receive an error over
 	errChan := make(chan error, 1)
-	// Create a channel to signal that we are done
-	readerStopChan := make(chan struct{}, 1)
 
 	// Start the message reader
-	go readMessages(conn, msgChan, errChan, readerStopChan)
+	wg.Add(1)
+	go readMsgs(ctx, wg, conn, msgChan, errChan)
+
+	// Send the message but check to make sure we haven't received an interrupt yet
+	sendMsg := func(ch chan<- coinbasepro.Message, ok bool, msg coinbasepro.Message) {
+		if !ok {
+			return
+		}
+		select {
+		case ch <- msg:
+		case <-ctx.Done():
+			return
+		}
+	}
 
 	// Constantly wait for messages
 	// Then send them to appropriate msgChannels to handle them
 	for true {
 		select {
 		// We received a message
-		case msg := <-msgChan:
+		case msg, ok := <-msgChan:
+			if !ok {
+				return
+			}
+
 			// Find the corresponding Go channel in the map to send the message to
 			msgType := msg.Type
 			switch msg.Type {
@@ -272,42 +312,28 @@ func WSDispatcher(
 
 			if msgType == "match" {
 				// In the overloaded case where matches need to go to 2 places, handle this explicitly
-				if channel, ok := channels["full"]; ok {
-					channel <- msg
-				}
-				if channel, ok := channels["matches"]; ok {
-					channel <- msg
-				}
+				ch, ok := channels["full"]
+				sendMsg(ch, ok, msg)
+				ch, ok = channels["matches"]
+				sendMsg(ch, ok, msg)
 			} else if msgType == "lucrum_start" {
 				// Alert all channels we should start listening
 				for _, ch := range channels {
-					ch <- msg
+					sendMsg(ch, true, msg)
 				}
 			} else {
 				// If the channel exists, send the message over to the handler
-				if channel, ok := channels[msgType]; ok {
-					channel <- msg
-				}
+				ch, ok := channels[msgType]
+				sendMsg(ch, ok, msg)
 			}
 
 		// Something bad happened and it's time to die
-		case err := <-errChan:
-			log.Println(err)
+		case err = <-errChan:
+			log.Println("Websocket error:", err)
 			return
 		// We received an interrupt
 		case <-ctx.Done():
-			log.Println("Received an interrupt. Shutting down gracefully")
-			// Send signal to the message reader that we are done
-			readerStopChan <- struct{}{}
-			close(readerStopChan)
-
-			for _, channel := range msgChannels {
-				stopChannels[channel.Name] <- struct{}{}
-				close(stopChannels[channel.Name])
-			}
-			// Close the connection so the reader sending in the messages errors and dies
-			_ = conn.Close()
-			os.Exit(1)
+			return
 		}
 	}
 }
