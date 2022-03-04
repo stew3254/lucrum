@@ -14,6 +14,8 @@ import (
 	"sync"
 )
 
+type LucrumKey string
+
 // Books is the global order book used throughout the program for lookup
 var Books *OrderBook
 
@@ -175,10 +177,11 @@ func ObListToDB(db *gorm.DB, ch <-chan *list.Element, stop chan<- struct{}, size
 			// There are no entries left so add remainders and break out of the loop
 			if !ok {
 				// db.Create(entries[:i])
+				buf := entries[:i]
 				db.Clauses(clause.OnConflict{
 					Columns:   []clause.Column{{Name: "order_id"}},
 					DoUpdates: clause.AssignmentColumns([]string{"last_sequence", "price", "size"}),
-				}).Create(entries[:i])
+				}).Create(&buf)
 				return
 			}
 
@@ -189,6 +192,6 @@ func ObListToDB(db *gorm.DB, ch <-chan *list.Element, stop chan<- struct{}, size
 		db.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "order_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{"last_sequence"}),
-		}).Create(entries)
+		}).Create(&entries)
 	}
 }

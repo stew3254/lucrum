@@ -32,9 +32,9 @@ type Bot struct {
 	DB       Database `json:"database"`
 }
 
-// ConfType holds the information whether the bot is in sandbox mode or not
+// ConfigurationType holds the information whether the bot is in sandbox mode or not
 // Note: this could probably be named better
-type ConfType struct {
+type ConfigurationType struct {
 	IsSandbox  bool      `json:"is_sandbox"`
 	Production Bot       `json:"production"`
 	Sandbox    Bot       `json:"sandbox"`
@@ -62,18 +62,18 @@ type Database struct {
 	Wait       time.Duration `json:"connection_wait"`
 }
 
-// Config is the top level structure for the configuration file
+// Configuration is the top level structure for the configuration file
 // CLI contains the parsed command line flags. This should only be used
 // For things that do not override normal configurations (such as verbosity level)
-type Config struct {
-	Conf     ConfType `json:"conf"`
-	Daemon   Daemon   `json:"daemon"`
-	WsDaemon Daemon   `json:"websocket_daemon"`
+type Configuration struct {
+	Type     ConfigurationType `json:"conf"`
+	Daemon   Daemon            `json:"daemon"`
+	WsDaemon Daemon            `json:"websocket_daemon"`
 	CLI      CommandLine
 }
 
 // Parse a Config file and the command line and return the resulting configuration
-func Parse() (conf Config, err error) {
+func Parse() (conf Configuration, err error) {
 	// Grab command line args
 	cli := argParse()
 
@@ -111,20 +111,20 @@ func Parse() (conf Config, err error) {
 
 	// Override sandbox behavior
 	if cli.Sandbox {
-		conf.Conf.IsSandbox = true
+		conf.Type.IsSandbox = true
 	} else if cli.UnSandbox {
-		conf.Conf.IsSandbox = false
+		conf.Type.IsSandbox = false
 	}
 
 	// Override websocket behavior
 	if cli.Granularity > 0 {
-		conf.Conf.Ws.Granularity = cli.Granularity
+		conf.Type.Ws.Granularity = cli.Granularity
 	}
 	if cli.RawMessages {
-		conf.Conf.Ws.RawMessages = cli.RawMessages
+		conf.Type.Ws.RawMessages = cli.RawMessages
 	}
 	if cli.StoreTransactions {
-		conf.Conf.Ws.StoreTransactions = cli.StoreTransactions
+		conf.Type.Ws.StoreTransactions = cli.StoreTransactions
 	}
 
 	return

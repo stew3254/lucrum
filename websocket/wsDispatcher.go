@@ -4,9 +4,8 @@ import (
 	"context"
 	"log"
 	"lucrum/config"
+	"lucrum/lib"
 	"sync"
-
-	"gorm.io/gorm"
 
 	ws "github.com/gorilla/websocket"
 	"github.com/preichenberger/go-coinbasepro/v2"
@@ -37,14 +36,20 @@ func Authenticate(conn *ws.Conn, conf config.Coinbase, msgs []coinbasepro.Messag
 func WSMessageHandler(
 	ctx context.Context,
 	wg *sync.WaitGroup,
-	db *gorm.DB,
 	msgChannel <-chan coinbasepro.Message,
-	handler func(db *gorm.DB, msg coinbasepro.Message),
+	handler func(msg coinbasepro.Message),
 ) {
+	cli := ctx.Value(lib.LucrumKey("conf")).(config.Configuration).CLI
 	defer func() {
-		log.Println("Closed message handler")
+		if cli.Verbose {
+			log.Println("Closed message handler")
+		}
 		wg.Done()
 	}()
+
+	if cli.Verbose {
+		log.Println("Started message handler")
+	}
 
 	// Forever look for updates
 	var lastSequence int64
@@ -65,7 +70,7 @@ func WSMessageHandler(
 			// Is this a mistake to assume it can't be 0?
 			// This fixes the bug with level2 channels not using sequences
 			if msg.Sequence == 0 || msg.Sequence > lastSequence {
-				handler(db, msg)
+				handler(msg)
 			}
 		case <-ctx.Done():
 			return
@@ -81,14 +86,22 @@ func readMsgs(
 	msgChan chan<- coinbasepro.Message,
 	errChan chan<- error,
 ) {
+	cli := ctx.Value(lib.LucrumKey("conf")).(config.Configuration).CLI
 	defer func() {
 		// Clean up and alert the parent we're done
 		_ = wsConn.Close()
 		close(msgChan)
 		close(errChan)
-		log.Println("Closed websocket reader")
+		if cli.Verbose {
+			log.Println("Closed websocket reader")
+		}
 		wg.Done()
 	}()
+
+	if cli.Verbose {
+		log.Println("Started websocket reader")
+	}
+
 	once := sync.Once{}
 	for {
 		// Get the message
@@ -125,23 +138,22 @@ func readMsgs(
 func WSDispatcher(
 	ctx context.Context,
 	wg *sync.WaitGroup,
-	conf config.Config,
-	db *gorm.DB,
 	msgChannels []coinbasepro.MessageChannel,
 ) {
+	cli := ctx.Value(lib.LucrumKey("conf")).(config.Configuration).CLI
 	// Tell the parent we're done
 	defer func() {
-		log.Println("Closed Websocket Dispatcher")
+		if cli.Verbose {
+			log.Println("Closed Websocket Dispatcher")
+		}
 		wg.Done()
 	}()
+	if cli.Verbose {
+		log.Println("Started Websocket Dispatcher")
+	}
 
 	// Get bot configuration
-	var botConf config.Bot
-	if conf.Conf.IsSandbox {
-		botConf = conf.Conf.Sandbox
-	} else {
-		botConf = conf.Conf.Production
-	}
+	botConf := ctx.Value(lib.LucrumKey("botConf")).(config.Coinbase)
 
 	// This is used, so we can receive user specific messages
 	// Due to how coinbase set up their websocket, it's not possible to tell
@@ -163,21 +175,21 @@ func WSDispatcher(
 			// Figure out which function to spawn with corresponding channel
 			switch channel.Name {
 			case "heartbeat":
-				go WSMessageHandler(ctx, wg, db, channels[channel.Name], HandleHeartbeat)
+				go WSMessageHandler(ctx, wg, channels[channel.Name], HandleHeartbeat)
 			case "status":
-				go WSMessageHandler(ctx, wg, db, channels[channel.Name], HandleStatus)
+				go WSMessageHandler(ctx, wg, channels[channel.Name], HandleStatus)
 			case "ticker":
-				go WSMessageHandler(ctx, wg, db, channels[channel.Name], HandleTicker)
+				go WSMessageHandler(ctx, wg, channels[channel.Name], HandleTicker)
 			case "level2":
-				go L2Handler(ctx, wg, db, channels[channel.Name])
+				go L2Handler(ctx, wg, channels[channel.Name])
 			case "user":
 				// In case multiple have been passed in, ignore them
 				if !seenUser {
 					seenUser = true
-					go UserHandler(ctx, wg, db, channels[channel.Name])
+					go UserHandler(ctx, wg, channels[channel.Name])
 				}
 			case "matches":
-				go WSMessageHandler(ctx, wg, db, channels[channel.Name], HandleMatches)
+				go WSMessageHandler(ctx, wg, channels[channel.Name], HandleMatches)
 			case "full":
 				// Since full channel and user channel look the same,
 				// this is the only decent method of confirming they are different
@@ -188,15 +200,12 @@ func WSDispatcher(
 					// Create a new dispatcher to explicitly handle this
 					newMsgChannels := []coinbasepro.MessageChannel{channel}
 					// TODO Figure out clean way to make these communicate with each other
-					go WSDispatcher(ctx, wg, conf, db, newMsgChannels)
+					go WSDispatcher(ctx, wg, newMsgChannels)
 				} else if !seenUser {
 					// Normal usage here
 					go L3Handler(
 						ctx,
 						wg,
-						botConf,
-						conf.Conf.Ws,
-						db,
 						channels[channel.Name],
 						channel.ProductIds,
 					)
@@ -208,7 +217,7 @@ func WSDispatcher(
 	// Create a websocket to coinbase
 	var wsDialer ws.Dialer
 	conn, _, err := wsDialer.Dial(
-		botConf.Coinbase.WsURL,
+		botConf.WsURL,
 		nil,
 	)
 
@@ -218,7 +227,7 @@ func WSDispatcher(
 	}
 
 	// Try to authenticate to the websocket
-	if err = Authenticate(conn, botConf.Coinbase, msgChannels); err != nil {
+	if err = Authenticate(conn, botConf, msgChannels); err != nil {
 		log.Fatalln("Authentication failed:", err)
 	}
 

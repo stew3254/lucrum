@@ -4,6 +4,8 @@ import (
 	"context"
 	"github.com/preichenberger/go-coinbasepro/v2"
 	"log"
+	"lucrum/config"
+	"lucrum/lib"
 	"sync"
 )
 
@@ -81,10 +83,18 @@ func MsgReader(
 	msgChan chan coinbasepro.Message,
 	lastSequence map[string]int64,
 ) {
+	cli := ctx.Value(lib.LucrumKey("conf")).(config.Configuration).CLI
 	defer func() {
-		log.Println("Closed subscribed message broadcaster")
+		if cli.Verbose {
+			log.Println("Closed subscribed message broadcaster")
+		}
 		wg.Done()
 	}()
+
+	if cli.Verbose {
+		log.Println("Started subscribed message broadcaster")
+	}
+
 	for {
 		select {
 		case msg, ok := <-msgChan:

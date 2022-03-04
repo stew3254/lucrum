@@ -153,23 +153,32 @@ func aggregateMsg(ctx AggregateCtx, msg coinbasepro.Message) {
 func AggregateTransactions(
 	ctx context.Context,
 	wg *sync.WaitGroup,
-	conf config.Websocket,
-	db *gorm.DB,
 	alert chan<- struct{},
 	productIds []string,
 	lastSequence map[string]int64,
 ) {
+	// Get configurations and db
+	cli := ctx.Value(lib.LucrumKey("conf")).(config.Configuration).CLI
+	wsConf := ctx.Value(lib.LucrumKey("conf")).(config.Configuration).Type.Ws
+	db := ctx.Value(lib.LucrumKey("db")).(*gorm.DB)
+
 	// Tell the parent we're done
 	defer func() {
-		log.Println("Shut down aggregator")
+		if cli.Verbose {
+			log.Println("Shut down aggregator")
+		}
 		wg.Done()
 	}()
 
-	// Create the timer
-	wait := time.Duration(conf.Granularity) * time.Second
+	if cli.Verbose {
+		log.Println("Started aggregator")
+	}
+
+	// Define the wait duration
+	wait := time.Duration(wsConf.Granularity) * time.Second
 
 	// Initialize all the aggregates
-	aggregateMap := initAggregates(productIds, conf.Granularity)
+	aggregateMap := initAggregates(productIds, wsConf.Granularity)
 
 	// Create the maps so we can track stuff for later
 	open := make(map[string]coinbasepro.Message, 0)
@@ -181,7 +190,7 @@ func AggregateTransactions(
 	channels := MsgSubscribe(productIds)
 
 	// This handles any new messages that were read
-	handleMsg := func(msg coinbasepro.Message, ok bool, lastSequence int64, timer *time.Timer) int64 {
+	handleMsg := func(msg coinbasepro.Message, ok bool, lastSequence int64, timer *time.Ticker) int64 {
 		// Something is wrong with the channel so just quit and lose all progress
 		if !ok {
 			// TODO find a nice way to clean this up and not waste messages
@@ -219,15 +228,15 @@ func AggregateTransactions(
 	}
 
 	// Wait for the messages
-	timer := time.NewTimer(wait)
+	ticker := time.NewTicker(wait)
 	for {
 		for _, productId := range productIds {
 			select {
 			// See if a message has come in yet
 			case msg, ok := <-channels[productId]:
-				lastSequence[msg.ProductID] = handleMsg(msg, ok, lastSequence[msg.ProductID], timer)
+				lastSequence[msg.ProductID] = handleMsg(msg, ok, lastSequence[msg.ProductID], ticker)
 
-			case <-timer.C:
+			case <-ticker.C:
 				// Make sure everything is caught up to the book
 				for _, productId := range productIds {
 					// Wait for the book to catch up
@@ -241,7 +250,7 @@ func AggregateTransactions(
 						// Wait for more messages to catch up but die if interrupted
 						select {
 						case msg, ok := <-channels[productId]:
-							lastSequence[productId] = handleMsg(msg, ok, lastSequence[productId], timer)
+							lastSequence[productId] = handleMsg(msg, ok, lastSequence[productId], ticker)
 						case <-ctx.Done():
 							return
 						}
@@ -343,17 +352,16 @@ func AggregateTransactions(
 				}
 
 				// Save the aggregates to the db
-				go db.Create(&aggregates)
-				log.Println("Saved aggregate transactions")
+				db.Create(&aggregates)
+				if cli.Verbose {
+					log.Println("Saved aggregate transaction")
+				}
 
 				// Re-initialize the aggregates
-				aggregateMap = initAggregates(productIds, conf.Granularity)
+				aggregateMap = initAggregates(productIds, wsConf.Granularity)
 				open = make(map[string]coinbasepro.Message, 0)
 				prices = make(map[string][]decimal.Decimal, 0)
 				sizes = make(map[string][]decimal.Decimal, 0)
-
-				// Reset the timer
-				timer.Reset(wait)
 			case <-ctx.Done():
 				return
 			default:

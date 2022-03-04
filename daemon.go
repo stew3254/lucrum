@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"lucrum/config"
@@ -20,9 +21,8 @@ import (
 func daemonize(
 	ctx context.Context,
 	wg *sync.WaitGroup,
-	config config.Config,
 	daemonConf config.Daemon,
-	helper func(context.Context, *sync.WaitGroup, config.Config, *os.Process),
+	helper func(context.Context, *sync.WaitGroup, config.Websocket, *os.Process),
 ) {
 
 	// Create pid file path
@@ -62,15 +62,14 @@ func daemonize(
 	proc, err := daemonCtx.Search()
 	// Something bad happened we don't know
 	// This catches the file not existing and there not being a PID in the file
-	if !os.IsNotExist(err) && err != io.EOF && err != nil {
+	if !os.IsNotExist(err) && !errors.Is(err, io.EOF) && err != nil {
 		log.Fatalln(err)
 	}
 
 	// A process supposedly exists
 	if proc != nil {
-		// Check to see if it really exists and if it does we are done
+		// Check to see if it really exists, and if it does we are done
 		if err = proc.Signal(syscall.Signal(0)); err == nil {
-			// log.Println("Daemon process already exists, skipping daemonizing")
 			return
 		}
 	}
@@ -80,18 +79,19 @@ func daemonize(
 	lib.Check(err)
 
 	// Run on daemonize
-	helper(ctx, wg, config, child)
+	wsConf := ctx.Value(lib.LucrumKey("conf")).(config.Configuration).Type.Ws
+	helper(ctx, wg, wsConf, child)
 
 	// Release the daemon
 	err = daemonCtx.Release()
 	lib.Check(err)
 }
 
-func wsDaemonHelper(ctx context.Context, wg *sync.WaitGroup, conf config.Config, child *os.Process) {
+func wsDaemonHelper(ctx context.Context, wg *sync.WaitGroup, conf config.Websocket, child *os.Process) {
 	// This is the child
 	if child == nil {
 		// Call the dispatcher
-		websocket.WSDispatcher(ctx, wg, conf, DB, conf.Conf.Ws.Channels)
+		websocket.WSDispatcher(ctx, wg, conf.Channels)
 	}
-	// On parent we just return, because more work might need to be done
+	// On the parent we just return, because more work might need to be done
 }

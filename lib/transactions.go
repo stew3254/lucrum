@@ -99,7 +99,7 @@ func NewTransactions(productIds []string, books *OrderBook) *Transactions {
 					stop <- struct{}{}
 					close(stop)
 				}()
-				for elem, ok := <-ch; ok; elem, ok = <-ch {
+				for elem := range ch {
 					v := elem.Value.(database.OrderBookSnapshot)
 					transaction := &database.Transaction{
 						OrderID:       v.OrderID,

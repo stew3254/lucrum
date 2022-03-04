@@ -350,7 +350,7 @@ func UpdateOrderBook(book *Book, msg coinbasepro.Message) {
 			close(stop)
 		}
 
-		for elem, ok := <-ch; ok; elem, ok = <-ch {
+		for elem := range ch {
 			if elem.Value.(database.OrderBookSnapshot).OrderID == msg.OrderID {
 				// Remove the entry
 				channelCleanup.Do(cleanup)
@@ -379,7 +379,7 @@ func UpdateOrderBook(book *Book, msg coinbasepro.Message) {
 			close(stop)
 		}
 		// Look through the order book to see if it's changing a resting order
-		for elem, ok := <-ch; ok; elem, ok = <-ch {
+		for elem := range ch {
 			v := elem.Value.(database.OrderBookSnapshot)
 			if v.OrderID == msg.OrderID {
 				// Update the new size

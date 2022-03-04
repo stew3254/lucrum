@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/stew3254/ratelimit"
+	"gorm.io/gorm"
 	"log"
 	"lucrum/config"
 	"lucrum/database"
@@ -12,13 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"gorm.io/gorm"
-
 	"github.com/preichenberger/go-coinbasepro/v2"
 )
 
 // Handle status messages
-func HandleStatus(db *gorm.DB, msg coinbasepro.Message) {
+func HandleStatus(msg coinbasepro.Message) {
 	out, err := json.Marshal(msg)
 	if err != nil {
 		log.Println(err)
@@ -27,17 +26,17 @@ func HandleStatus(db *gorm.DB, msg coinbasepro.Message) {
 }
 
 // Handle heartbeat messages
-func HandleHeartbeat(db *gorm.DB, msg coinbasepro.Message) {
+func HandleHeartbeat(msg coinbasepro.Message) {
 	// Do nothing because it's simply so the websocket doesn't close
 }
 
 // Handle ticker messages
-func HandleTicker(db *gorm.DB, msg coinbasepro.Message) {
+func HandleTicker(msg coinbasepro.Message) {
 	log.Println(msg.Price)
 }
 
 // Handle matches from level 2 order book
-func HandleMatches(db *gorm.DB, msg coinbasepro.Message) {
+func HandleMatches(msg coinbasepro.Message) {
 	out, err := json.Marshal(msg)
 	if err != nil {
 		log.Println(err)
@@ -49,7 +48,6 @@ func HandleMatches(db *gorm.DB, msg coinbasepro.Message) {
 func L2Handler(
 	ctx context.Context,
 	wg *sync.WaitGroup,
-	db *gorm.DB,
 	msgChannel chan coinbasepro.Message,
 ) {
 	defer func() {
@@ -91,31 +89,41 @@ func L2Handler(
 func L3Handler(
 	ctx context.Context,
 	wg *sync.WaitGroup,
-	botConf config.Bot,
-	wsConf config.Websocket,
-	db *gorm.DB,
 	msgChannel chan coinbasepro.Message,
 	productIds []string,
 ) {
+	// Get the configuration
+	cli := ctx.Value(lib.LucrumKey("conf")).(config.Configuration).CLI
+	wsConf := ctx.Value(lib.LucrumKey("conf")).(config.Configuration).Type.Ws
+
 	// Tell the parent when we're done
 	defer func() {
-		log.Println("Cleaned up L3 Handler")
+		if cli.Verbose {
+			log.Println("Cleaned up L3 Handler")
+		}
 		wg.Done()
 	}()
 
 	// Initialize subscription channels
 	SubChans = NewChannels(productIds)
 
-	// Now we can get the current state of the order books
-	client := &coinbasepro.Client{
-		BaseURL:    botConf.Coinbase.URL,
-		Key:        botConf.Coinbase.Key,
-		Secret:     botConf.Coinbase.Secret,
-		Passphrase: botConf.Coinbase.Passphrase,
-		HTTPClient: &http.Client{
-			Timeout: 60 * time.Second,
-		},
-		RetryCount: 3,
+	// Get the coinbase client or create one if it doesn't exist
+	maybeClient := ctx.Value(lib.LucrumKey("client"))
+	var client *coinbasepro.Client
+	if maybeClient == nil {
+		botConf := ctx.Value(lib.LucrumKey("botConf")).(config.Coinbase)
+		client = &coinbasepro.Client{
+			BaseURL:    botConf.URL,
+			Key:        botConf.Key,
+			Secret:     botConf.Secret,
+			Passphrase: botConf.Passphrase,
+			HTTPClient: &http.Client{
+				Timeout: 60 * time.Second,
+			},
+			RetryCount: 3,
+		}
+	} else {
+		client = maybeClient.(*coinbasepro.Client)
 	}
 
 	// Create a RateLimiter to not overwhelm the API
@@ -125,6 +133,9 @@ func L3Handler(
 		100*time.Millisecond,
 		time.Second,
 	)
+
+	// Get the database
+	db := ctx.Value(lib.LucrumKey("db")).(*gorm.DB)
 
 	// Look for the first message saying we're listening for messages
 	// Must do this before getting the order book, so we don't miss messages
@@ -138,12 +149,16 @@ func L3Handler(
 		return
 	}
 
+	if cli.Verbose {
+		log.Println("Getting order book")
+	}
 	// Get the order books
-	log.Println("Getting order book")
 	lib.GetOrderBooks(&lib.Books, client, rl, productIds)
-	log.Println("Order book created")
 	// Add all entries to the database
 	lib.Books.Save(db, true)
+	if cli.Verbose {
+		log.Println("Order book created")
+	}
 
 	var openTransactions *lib.Transactions
 	var doneTransactions *lib.Transactions
@@ -164,27 +179,17 @@ func L3Handler(
 		readerSequence[productId] = seq
 	}
 
-	// Aggregate transactions and save them to the db
+	// Aggregate transactions and save them to the database.DB
 	aggregateAlertChannel := make(chan struct{}, 1)
 
 	// Spin off aggregate as a separate goroutine to listen to incoming messages
 	wg.Add(1)
-	go AggregateTransactions(
-		ctx,
-		wg,
-		wsConf,
-		db,
-		aggregateAlertChannel,
-		productIds,
-		aggregateSequence,
-	)
+	go AggregateTransactions(ctx, wg, aggregateAlertChannel, productIds, aggregateSequence)
 
 	// Function to update the order book and possibly update transactions
 	handleMsg := func(
 		ctx context.Context,
 		wg *sync.WaitGroup,
-		client *coinbasepro.Client,
-		rl *ratelimit.RateLimiter,
 		openTransactions *lib.Transactions,
 		doneTransactions *lib.Transactions,
 		msgChan <-chan coinbasepro.Message,
@@ -201,14 +206,17 @@ func L3Handler(
 			if wsConf.RawMessages && count > 0 {
 				buf := msgBuf[:count]
 				db.Save(&buf)
-				log.Println("Saved leftover l3 messages", count)
 			}
-			log.Println("L3 msg consumer finished")
+			if cli.Verbose {
+				log.Println("L3 msg consumer finished")
+			}
 			// Alert the parent we're done
 			wg.Done()
 		}
 
-		log.Println("Handling L3 messages now")
+		if cli.Verbose {
+			log.Println("Handling L3 messages now")
+		}
 		// Listen to messages forever
 		count := 0
 		for {
@@ -226,7 +234,7 @@ func L3Handler(
 					// Add all entries to the database because we can't account for the gap that occurred
 					lib.GetOrderBooks(&lib.Books, client, rl, productIds)
 					// Add all entries to the database
-					go lib.Books.Save(db, true)
+					lib.Books.Save(db, true)
 					// Fix last sequence
 					lastSequence = msg.Sequence
 				} else if msg.Sequence == lastSequence+1 {
@@ -263,20 +271,11 @@ func L3Handler(
 
 	// Spin off the goroutines to listen per product id
 	for _, productId := range productIds {
-		// Subscribe to the subchan in this thread, so we know it's been added before spinning
+		// Subscribe to the channel in this thread, so we know it's been added before spinning
 		// off the goroutine and then the MsgReader
 		subChan := SubChans.Add(productId)
 		wg.Add(1)
-		go handleMsg(
-			ctx,
-			wg,
-			client,
-			rl,
-			openTransactions,
-			doneTransactions,
-			subChan,
-			lastSequence[productId],
-		)
+		go handleMsg(ctx, wg, openTransactions, doneTransactions, subChan, lastSequence[productId])
 	}
 
 	// Make sure the aggregate function is running and ready to listen for incoming messages
@@ -295,6 +294,7 @@ func L3Handler(
 	aggregateSequence = nil
 	aggregateAlertChannel = nil
 
+	// TODO find a better place to put this
 	// Now we're ready to read out all messages
 	wg.Add(1)
 	MsgReader(ctx, wg, msgChannel, readerSequence)
@@ -304,7 +304,6 @@ func L3Handler(
 func UserHandler(
 	ctx context.Context,
 	wg *sync.WaitGroup,
-	db *gorm.DB,
 	msgChannel chan coinbasepro.Message,
 ) {
 	defer func() {

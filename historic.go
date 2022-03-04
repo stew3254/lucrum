@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/csv"
 	"errors"
+	"gorm.io/gorm"
 	"io"
 	"log"
 	"lucrum/database"
+	"lucrum/lib"
 	"os"
 	"strconv"
 	"strings"
@@ -66,6 +68,9 @@ func SaveHistoricalRates(
 	rl *ratelimit.RateLimiter,
 	params HistoricRateParams,
 ) (err error) {
+	// Get the database from the context
+	db := ctx.Value(lib.LucrumKey("db")).(*gorm.DB)
+
 	// Check if granularity is valid or not
 	validGranularity := false
 	for _, granularity := range GetHistoricRatesGranularities() {
@@ -126,7 +131,7 @@ func SaveHistoricalRates(
 			rates = append(rates, convertRates(rate, params))
 		}
 		// Write out to the DB
-		DB.Create(&rates)
+		db.Create(&rates)
 
 		// Move forward the times
 		tempTime = nextTime.Add(time.Duration(params.Granularity) * time.Second)
@@ -145,26 +150,24 @@ func SaveHistoricalRates(
 	// Loop through all of the requests to get them
 	for nextTime.Before(params.End) {
 		// Send the job channel the new params to get
-		param := HistoricRateParams{
+		err = getRates(HistoricRateParams{
 			Product:     params.Product,
 			Start:       tempTime,
 			End:         nextTime,
 			Granularity: params.Granularity,
-		}
-		err = getRates(param)
+		})
 		if err != nil {
 			return err
 		}
 	}
 
 	// Make the last request
-	param := HistoricRateParams{
+	return getRates(HistoricRateParams{
 		Product:     params.Product,
 		Start:       tempTime,
 		End:         params.End,
 		Granularity: params.Granularity,
-	}
-	return getRates(param)
+	})
 }
 
 // ReadRateFile reads in a specific CSV file format to get historical data
