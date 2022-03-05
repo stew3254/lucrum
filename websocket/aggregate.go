@@ -165,7 +165,7 @@ func AggregateTransactions(
 	// Tell the parent we're done
 	defer func() {
 		if cli.Verbose {
-			log.Println("Shut down aggregator")
+			log.Println("Stopped aggregator")
 		}
 		wg.Done()
 	}()

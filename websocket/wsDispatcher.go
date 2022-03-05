@@ -108,7 +108,8 @@ func readMsgs(
 		msg := coinbasepro.Message{}
 		// _, b, err := wsConn.ReadMessage()
 		// log.Println(string(b))
-		if err := wsConn.ReadJSON(&msg); err != nil {
+		var err error
+		if err = wsConn.ReadJSON(&msg); err != nil {
 			select {
 			// This was closed normally, it's not a real error
 			case <-ctx.Done():
@@ -144,12 +145,12 @@ func WSDispatcher(
 	// Tell the parent we're done
 	defer func() {
 		if cli.Verbose {
-			log.Println("Closed Websocket Dispatcher")
+			log.Println("Closed the websocket dispatcher")
 		}
 		wg.Done()
 	}()
 	if cli.Verbose {
-		log.Println("Started Websocket Dispatcher")
+		log.Println("Started the websocket dispatcher")
 	}
 
 	// Get bot configuration

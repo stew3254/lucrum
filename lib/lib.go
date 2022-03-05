@@ -133,11 +133,12 @@ func IterHelper(
 		// Handle clean up
 		once := sync.Once{}
 		f := func() {
-			close(iter)
 			if shouldLock {
 				locker.Unlock()
 			}
+			close(iter)
 		}
+		// Unlock and clean up
 		defer once.Do(f)
 
 		// Don't lock if locked externally
@@ -162,7 +163,13 @@ func IterHelper(
 }
 
 // ObListToDB gradually converts an order book list to a slice and adds it to the database
-func ObListToDB(db *gorm.DB, ch <-chan *list.Element, stop chan<- struct{}, size int) {
+func ObListToDB(
+	db *gorm.DB,
+	ch <-chan *list.Element,
+	stop chan<- struct{},
+	lastSequence int64,
+	size int,
+) {
 	// Just tell the channel we're done
 	defer func() {
 		stop <- struct{}{}
@@ -185,13 +192,16 @@ func ObListToDB(db *gorm.DB, ch <-chan *list.Element, stop chan<- struct{}, size
 				return
 			}
 
-			entries[i] = elem.Value.(database.OrderBookSnapshot)
+			e := elem.Value.(database.OrderBookSnapshot)
+			// Update the last sequence before adding
+			e.LastSequence = lastSequence
+			entries[i] = e
 		}
 		// Add entries to the database
 		// db.Create(entries)
 		db.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "order_id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"last_sequence"}),
+			DoUpdates: clause.AssignmentColumns([]string{"last_sequence", "price", "size"}),
 		}).Create(&entries)
 	}
 }

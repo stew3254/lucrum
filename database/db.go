@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/preichenberger/go-coinbasepro/v2"
+	"gorm.io/gorm/logger"
 	"log"
 	"lucrum/config"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+const BatchSize = 500
 
 func check(err error) {
 	if err != nil {
@@ -35,10 +38,22 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 	// Make sure type is lower
 	dbType := strings.ToLower(conf.Type)
 
+	newLogger := logger.New(
+		log.New(os.Stdout, "\n", log.LstdFlags), // io writer
+		logger.Config{
+			SlowThreshold: 10 * time.Second,
+			LogLevel:      logger.Error,
+			Colorful:      true,
+		},
+	)
+
 	// If using a SQLite DB
 	if dbType == "sqlite" {
 		// Just open the db
-		db, err := gorm.Open(sqlite.Open(conf.Name), &gorm.Config{CreateBatchSize: 500})
+		db, err := gorm.Open(sqlite.Open(conf.Name), &gorm.Config{
+			CreateBatchSize: BatchSize,
+			Logger:          newLogger,
+		})
 		if err != nil {
 			log.Fatalln("Failed to open the database with reason:", err)
 		}
@@ -61,7 +76,9 @@ func ConnectDB(ctx context.Context, conf config.Database) (db *gorm.DB) {
 		for i := 1; i <= conf.Attempts; i++ {
 			var err error
 			// TODO fix this when database cannot connect
-			db, err = gorm.Open(postgres.Open(connectionString), &gorm.Config{})
+			db, err = gorm.Open(postgres.Open(connectionString), &gorm.Config{
+				Logger: newLogger,
+			})
 			// Failure to connect to the database
 			if err != nil {
 				if i != conf.Attempts {

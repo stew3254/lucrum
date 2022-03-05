@@ -30,7 +30,7 @@ channels = [
 ]
 granularity = 60
 raw_mesaages = false
-store_transactions = false #Not implemnted yet
+store_transactions = false #Not implemented yet
 
 # Database information
 [conf.production.database]

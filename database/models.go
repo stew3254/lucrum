@@ -1,27 +1,5 @@
 package database
 
-type L3OrderMessage struct {
-	Sequence      int64  `gorm:"type:int; primaryKey; not null"`
-	Type          string `gorm:"type:text; not null"`
-	ProductID     string `gorm:"type:text; not null"`
-	TradeID       int    `gorm:"type:int"`
-	OrderID       string `gorm:"type:varchar(128)"`
-	MakerOrderID  string `gorm:"type:varchar(128)"`
-	TakerOrderID  string `gorm:"type:varchar(128)"`
-	Time          int64  `gorm:"type:int"`
-	RemainingSize string `gorm:"type:text"`
-	NewSize       string `gorm:"type:text"`
-	OldSize       string `gorm:"type:text"`
-	Size          string `gorm:"type:text"`
-	Price         string `gorm:"type:text"`
-	Side          string `gorm:"type:varchar(4)"`
-	Reason        string `gorm:"type:varchar(8)"`
-	OrderType     string `gorm:"type:varchar(6)"`
-	Funds         string `gorm:"type:text"`
-	UserID        string `gorm:"type:varchar(128)"`
-	ProfileID     string `gorm:"type:varchar(128)"`
-}
-
 // HistoricalData is the historical data pulled from the Coinbase Pro API
 type HistoricalData struct {
 	Id          int64   `gorm:"type:integer; primaryKey; not null"`
@@ -47,6 +25,30 @@ type OrderBookSnapshot struct {
 	Size          string `gorm:"type:text; not null"`
 }
 
+// L3OrderMessage is a raw message gotten from the coinbase full channel
+type L3OrderMessage struct {
+	Sequence      int64  `gorm:"type:int; primaryKey; not null"`
+	Type          string `gorm:"type:text; not null"`
+	ProductID     string `gorm:"type:text; not null"`
+	TradeID       int    `gorm:"type:int"`
+	OrderID       string `gorm:"type:varchar(128)"`
+	MakerOrderID  string `gorm:"type:varchar(128)"`
+	TakerOrderID  string `gorm:"type:varchar(128)"`
+	Time          int64  `gorm:"type:int"`
+	RemainingSize string `gorm:"type:text"`
+	NewSize       string `gorm:"type:text"`
+	OldSize       string `gorm:"type:text"`
+	Size          string `gorm:"type:text"`
+	Price         string `gorm:"type:text"`
+	Side          string `gorm:"type:varchar(4)"`
+	Reason        string `gorm:"type:varchar(8)"`
+	OrderType     string `gorm:"type:varchar(6)"`
+	Funds         string `gorm:"type:text"`
+	UserID        string `gorm:"type:varchar(128)"`
+	ProfileID     string `gorm:"type:varchar(128)"`
+}
+
+// Transaction is a processed version of an L3 message which is nicer for analysis
 type Transaction struct {
 	OrderID       string `gorm:"type:text; primaryKey; not null"`
 	ProductId     string `gorm:"type:varchar(8); not null"`
@@ -68,6 +70,7 @@ type Transaction struct {
 	// StopPrice     string `gorm:"type:text"`
 }
 
+// AggregateTransaction is stats on all the transactions that occurred in a time period
 type AggregateTransaction struct {
 	ProductId                     string `gorm:"type:varchar(8); not null"`
 	Granularity                   int    `gorm:"type:integer; not null"`

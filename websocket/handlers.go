@@ -99,10 +99,14 @@ func L3Handler(
 	// Tell the parent when we're done
 	defer func() {
 		if cli.Verbose {
-			log.Println("Cleaned up L3 Handler")
+			log.Println("Stopped the L3 Handler")
 		}
 		wg.Done()
 	}()
+
+	if cli.Verbose {
+		log.Println("Started the L3 Handler")
+	}
 
 	// Initialize subscription channels
 	SubChans = NewChannels(productIds)
@@ -190,16 +194,15 @@ func L3Handler(
 	handleMsg := func(
 		ctx context.Context,
 		wg *sync.WaitGroup,
-		openTransactions *lib.Transactions,
-		doneTransactions *lib.Transactions,
+		obWg *sync.WaitGroup,
+		trWg *sync.WaitGroup,
 		msgChan <-chan coinbasepro.Message,
 		lastSequence int64,
 	) {
-		bufSize := 500
 		var msgBuf []database.L3OrderMessage
 		// Queue messages in a buffer before storing them in bulk
 		if wsConf.RawMessages {
-			msgBuf = make([]database.L3OrderMessage, bufSize)
+			msgBuf = make([]database.L3OrderMessage, database.BatchSize)
 		}
 		done := func(count int) {
 			// Save leftover messages to the database
@@ -208,14 +211,17 @@ func L3Handler(
 				db.Save(&buf)
 			}
 			if cli.Verbose {
-				log.Println("L3 msg consumer finished")
+				log.Println("L3 message consumer finished")
 			}
+			trWg.Done()
+			// Tell order book we're done
+			obWg.Done()
 			// Alert the parent we're done
 			wg.Done()
 		}
 
 		if cli.Verbose {
-			log.Println("Handling L3 messages now")
+			log.Println("Consuming L3 messages now")
 		}
 		// Listen to messages forever
 		count := 0
@@ -245,7 +251,7 @@ func L3Handler(
 					if wsConf.RawMessages {
 						m := database.ToOrderMessage(msg)
 						msgBuf[count] = m
-						count = (count + 1) % bufSize
+						count = (count + 1) % database.BatchSize
 						if count == 0 {
 							// Save the messages to the database
 							db.Save(&msgBuf)
@@ -269,13 +275,31 @@ func L3Handler(
 		}
 	}
 
+	// Create the order book and transaction wait groups
+	obWg := &sync.WaitGroup{}
+	trWg := &sync.WaitGroup{}
+
 	// Spin off the goroutines to listen per product id
 	for _, productId := range productIds {
 		// Subscribe to the channel in this thread, so we know it's been added before spinning
 		// off the goroutine and then the MsgReader
 		subChan := SubChans.Add(productId)
 		wg.Add(1)
-		go handleMsg(ctx, wg, openTransactions, doneTransactions, subChan, lastSequence[productId])
+		obWg.Add(1)
+		if cli.StoreTransactions {
+			trWg.Add(1)
+		}
+		go handleMsg(ctx, wg, obWg, trWg, subChan, lastSequence[productId])
+	}
+
+	// Spin off order book saver
+	wg.Add(1)
+	go lib.OrderBookSaver(ctx, wg, obWg)
+
+	if cli.StoreTransactions {
+		// Spin off transaction saver
+		wg.Add(1)
+		go lib.TransactionsSaver(ctx, wg, trWg, openTransactions, doneTransactions)
 	}
 
 	// Make sure the aggregate function is running and ready to listen for incoming messages
@@ -289,15 +313,9 @@ func L3Handler(
 		return
 	}
 
-	// Clean up stuff since we don't need it anymore
-	lastSequence = nil
-	aggregateSequence = nil
-	aggregateAlertChannel = nil
-
-	// TODO find a better place to put this
 	// Now we're ready to read out all messages
 	wg.Add(1)
-	MsgReader(ctx, wg, msgChannel, readerSequence)
+	go MsgReader(ctx, wg, msgChannel, readerSequence)
 }
 
 // UserHandler handles full messages only concerning the authenticated user

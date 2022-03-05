@@ -2,10 +2,12 @@ package lib
 
 import (
 	"container/list"
+	"context"
 	"github.com/preichenberger/go-coinbasepro/v2"
 	"github.com/stew3254/ratelimit"
 	"gorm.io/gorm"
 	"log"
+	"lucrum/config"
 	"lucrum/database"
 	"sync"
 	"time"
@@ -42,26 +44,32 @@ func (b *Book) SellsWriteIter(stop <-chan struct{}, shouldLock bool) (iter <-cha
 
 func (b *Book) AddBuy(snapshot database.OrderBookSnapshot, shouldLock bool) {
 	if shouldLock {
-		defer b.BuyLock.Unlock()
 		b.BuyLock.Lock()
+		b.buys.PushFront(snapshot)
+		b.BuyLock.Unlock()
+	} else {
+		b.buys.PushFront(snapshot)
 	}
-	b.buys.PushFront(snapshot)
 }
 
 func (b *Book) AddSell(snapshot database.OrderBookSnapshot, shouldLock bool) {
 	if shouldLock {
-		defer b.SellLock.Unlock()
 		b.SellLock.Lock()
+		b.sells.PushFront(snapshot)
+		b.SellLock.Unlock()
+	} else {
+		b.sells.PushFront(snapshot)
 	}
-	b.sells.PushFront(snapshot)
 }
 
 func remove(lock *sync.RWMutex, shouldLock bool, l *list.List, e *list.Element) {
 	if shouldLock {
-		defer lock.Unlock()
 		lock.Lock()
+		l.Remove(e)
+		lock.Unlock()
+	} else {
+		l.Remove(e)
 	}
-	l.Remove(e)
 }
 
 func (b *Book) RemoveBuy(e *list.Element, shouldLock bool) {
@@ -72,48 +80,60 @@ func (b *Book) RemoveSell(e *list.Element, shouldLock bool) {
 	remove(b.SellLock, shouldLock, b.sells, e)
 }
 
-func (b *Book) GetSequence(shouldLock bool) int64 {
+func (b *Book) GetSequence(shouldLock bool) (sequence int64) {
 	if shouldLock {
-		defer b.Lock.RUnlock()
 		b.Lock.RLock()
+		sequence = b.sequence
+		b.Lock.RUnlock()
+	} else {
+		sequence = b.sequence
 	}
-	return b.sequence
+	return sequence
 }
 
 func (b *Book) SetSequence(sequence int64, shouldLock bool) {
 	if shouldLock {
-		defer b.Lock.Unlock()
 		b.Lock.Lock()
+		b.sequence = sequence
+		b.Lock.Unlock()
+	} else {
+		b.sequence = sequence
 	}
-	b.sequence = sequence
 }
 
-func (b *Book) Len(shouldLock bool) int {
+func (b *Book) Len(shouldLock bool) (length int) {
 	if shouldLock {
-		defer func() {
-			b.BuyLock.RUnlock()
-			b.SellLock.RUnlock()
-		}()
 		b.BuyLock.RLock()
 		b.SellLock.RLock()
+		length = b.buys.Len() + b.sells.Len()
+		b.BuyLock.RUnlock()
+		b.SellLock.RUnlock()
+	} else {
+		length = b.buys.Len() + b.sells.Len()
 	}
-	return b.buys.Len() + b.sells.Len()
+	return length
 }
 
-func (b *Book) BuyLen(shouldLock bool) int {
+func (b *Book) BuyLen(shouldLock bool) (length int) {
 	if shouldLock {
-		defer b.BuyLock.RUnlock()
 		b.BuyLock.RLock()
+		length = b.buys.Len()
+		b.BuyLock.RUnlock()
+	} else {
+		length = b.buys.Len()
 	}
-	return b.buys.Len()
+	return length
 }
 
-func (b *Book) SellLen(shouldLock bool) int {
+func (b *Book) SellLen(shouldLock bool) (length int) {
 	if shouldLock {
-		defer b.SellLock.RUnlock()
 		b.SellLock.RLock()
+		length = b.sells.Len()
+		b.SellLock.RUnlock()
+	} else {
+		length = b.sells.Len()
 	}
-	return b.sells.Len()
+	return length
 }
 
 func NewBook(sequence int64) *Book {
@@ -135,58 +155,73 @@ type OrderBook struct {
 // Clean wipes the order book clean
 func (o *OrderBook) Clean(shouldLock bool) {
 	if shouldLock {
-		defer o.Lock.Unlock()
 		o.Lock.Lock()
 	}
 	for k, _ := range o.books {
 		// Clean the books
 		o.books[k] = nil
 	}
+	if shouldLock {
+		o.Lock.Unlock()
+	}
 }
 
-func (o *OrderBook) Get(productId string, shouldLock bool) *Book {
+func (o *OrderBook) Get(productId string, shouldLock bool) (book *Book) {
 	if shouldLock {
-		defer o.Lock.RUnlock()
 		o.Lock.RLock()
+		book = o.books[productId]
+		o.Lock.RUnlock()
+	} else {
+		book = o.books[productId]
 	}
-	return o.books[productId]
+	return book
 }
 
 func (o *OrderBook) Set(productId string, book *Book, shouldLock bool) {
 	if shouldLock {
-		defer o.Lock.Unlock()
+		o.Lock.Unlock()
+		o.books[productId] = book
 		o.Lock.Lock()
+	} else {
+		o.books[productId] = book
 	}
-	o.books[productId] = book
 }
 
 func (o *OrderBook) Remove(productId string, shouldLock bool) {
 	if shouldLock {
-		defer o.Lock.Unlock()
 		o.Lock.Lock()
+		delete(o.books, productId)
+		o.Lock.Unlock()
+	} else {
+		delete(o.books, productId)
 	}
-	delete(o.books, productId)
 }
 
-func (o *OrderBook) Len(shouldLock bool) int {
+func (o *OrderBook) Len(shouldLock bool) (length int) {
 	if shouldLock {
-		defer o.Lock.Unlock()
 		o.Lock.RLock()
+		length = len(o.books)
+		o.Lock.RUnlock()
+	} else {
+		length = len(o.books)
 	}
-	return len(o.books)
+	return length
 }
 
 // Save all books to the db
 func (o *OrderBook) Save(db *gorm.DB, shouldLock bool) {
 	if shouldLock {
-		defer o.Lock.RUnlock()
 		o.Lock.RLock()
 	}
 	for _, book := range o.books {
 		buyStop := make(chan struct{})
 		sellStop := make(chan struct{})
-		ObListToDB(db, book.BuysIter(buyStop, true), buyStop, 10000)
-		ObListToDB(db, book.SellsIter(sellStop, true), sellStop, 10000)
+		seq := book.GetSequence(false)
+		ObListToDB(db, book.BuysIter(buyStop, true), buyStop, seq, 10000)
+		ObListToDB(db, book.SellsIter(sellStop, true), sellStop, seq, 10000)
+	}
+	if shouldLock {
+		o.Lock.RUnlock()
 	}
 }
 
@@ -344,16 +379,9 @@ func UpdateOrderBook(book *Book, msg coinbasepro.Message) {
 		}
 
 		// Remove the entry from the book if it exists
-		channelCleanup := sync.Once{}
-		cleanup := func() {
-			stop <- struct{}{}
-			close(stop)
-		}
-
 		for elem := range ch {
 			if elem.Value.(database.OrderBookSnapshot).OrderID == msg.OrderID {
 				// Remove the entry
-				channelCleanup.Do(cleanup)
 				if msg.Side == "buy" {
 					book.RemoveBuy(elem, false)
 				} else {
@@ -362,7 +390,8 @@ func UpdateOrderBook(book *Book, msg coinbasepro.Message) {
 				break
 			}
 		}
-		channelCleanup.Do(cleanup)
+		stop <- struct{}{}
+		close(stop)
 	case "change":
 		// Get the entries we care about
 		stop := make(chan struct{})
@@ -373,11 +402,6 @@ func UpdateOrderBook(book *Book, msg coinbasepro.Message) {
 			ch = book.SellsWriteIter(stop, true)
 		}
 
-		channelCleanup := sync.Once{}
-		cleanup := func() {
-			stop <- struct{}{}
-			close(stop)
-		}
 		// Look through the order book to see if it's changing a resting order
 		for elem := range ch {
 			v := elem.Value.(database.OrderBookSnapshot)
@@ -386,10 +410,55 @@ func UpdateOrderBook(book *Book, msg coinbasepro.Message) {
 				v.Size = msg.NewSize
 				// Update the value again
 				elem.Value = v
-				channelCleanup.Do(cleanup)
 				break
 			}
 		}
-		channelCleanup.Do(cleanup)
+		stop <- struct{}{}
+		close(stop)
+	}
+}
+
+// OrderBookSaver will periodically save the order book state and will save it on program end
+func OrderBookSaver(ctx context.Context, wg *sync.WaitGroup, obWg *sync.WaitGroup) {
+	cli := ctx.Value(LucrumKey("conf")).(config.Configuration).CLI
+	db := ctx.Value(LucrumKey("db")).(*gorm.DB)
+
+	defer func() {
+		// Wait for all the l3 message handlers to finish in order to save
+		if cli.Verbose {
+			log.Println("Order book saver waiting on L3 consumers to finish")
+		}
+		obWg.Wait()
+		if cli.Verbose {
+			log.Println("Saving order book")
+		}
+		// Save the book one last time and exit
+		Books.Save(db, true)
+		if cli.Verbose {
+			log.Println("Saved order book, now closing")
+		}
+		// Tell the parent we're done
+		wg.Done()
+	}()
+
+	if cli.Verbose {
+		log.Println("Started order book saver")
+	}
+
+	// Every 5 minutes update the order book
+	ticker := time.NewTicker(5 * time.Minute)
+	for {
+		select {
+		case <-ticker.C:
+			if cli.Verbose {
+				log.Println("Saving order book")
+			}
+			Books.Save(db, true)
+			if cli.Verbose {
+				log.Println("Saved order book")
+			}
+		case <-ctx.Done():
+			return
+		}
 	}
 }

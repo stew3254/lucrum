@@ -2,9 +2,15 @@ package lib
 
 import (
 	"container/list"
+	"context"
 	"github.com/preichenberger/go-coinbasepro/v2"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"log"
+	"lucrum/config"
 	"lucrum/database"
 	"sync"
+	"time"
 )
 
 type Transactions struct {
@@ -25,8 +31,8 @@ func (t *Transactions) Pop(productId string) (out []database.Transaction) {
 }
 
 func (t *Transactions) ToSlice(productId string) (transactions []*database.Transaction) {
-	transactions = make([]*database.Transaction, 0, len(t.transactions))
 	t.lock.RLock()
+	transactions = make([]*database.Transaction, 0, len(t.transactions[productId]))
 	for _, v := range t.transactions[productId] {
 		transactions = append(transactions, v)
 	}
@@ -78,54 +84,66 @@ func (t *Transactions) Remove(productId, orderId string) {
 	t.lock.Unlock()
 }
 
+func (t *Transactions) Len() (l int) {
+	defer t.lock.RUnlock()
+	t.lock.RLock()
+	for _, m := range t.transactions {
+		l += len(m)
+	}
+	return l
+}
+
+func (t *Transactions) Clean(productId string) {
+	t.lock.Lock()
+	t.transactions[productId] = make(map[string]*database.Transaction)
+	t.lock.Unlock()
+}
+
 func NewTransactions(productIds []string, books *OrderBook) *Transactions {
 	t := &Transactions{
 		transactions: make(map[string]map[string]*database.Transaction),
 		lock:         &sync.RWMutex{},
 	}
+
 	// Initialize the map
 	for _, productId := range productIds {
 		t.transactions[productId] = make(map[string]*database.Transaction)
 	}
 
+	addTransactions := func(ch <-chan *list.Element, stop chan<- struct{}) {
+		for elem := range ch {
+			v := elem.Value.(database.OrderBookSnapshot)
+			transaction := &database.Transaction{
+				OrderID:       v.OrderID,
+				ProductId:     v.ProductId,
+				Time:          v.Time,
+				Price:         v.Price,
+				Side:          "buy",
+				Size:          v.Size,
+				AddedToBook:   true,
+				RemainingSize: v.Size,
+			}
+			t.Set(v.ProductId, v.OrderID, transaction)
+		}
+		stop <- struct{}{}
+		close(stop)
+	}
+
 	// Add transactions from the order book
 	if books != nil {
+		books.Lock.RLock()
 		for _, productId := range productIds {
-			book := Books.Get(productId, true)
+			book := books.Get(productId, false)
+			book.Lock.RLock()
 			buyStop := make(chan struct{})
 			sellStop := make(chan struct{})
-			addTransactions := func(ch <-chan *list.Element, stop chan<- struct{}) {
-				defer func() {
-					stop <- struct{}{}
-					close(stop)
-				}()
-				for elem := range ch {
-					v := elem.Value.(database.OrderBookSnapshot)
-					transaction := &database.Transaction{
-						OrderID:       v.OrderID,
-						ProductId:     v.ProductId,
-						Time:          v.Time,
-						Price:         v.Price,
-						Side:          "buy",
-						Size:          v.Size,
-						AddedToBook:   true,
-						RemainingSize: v.Size,
-					}
-					t.Set(v.ProductId, v.OrderID, transaction)
-				}
-			}
-			addTransactions(book.BuysIter(buyStop, true), buyStop)
-			addTransactions(book.SellsIter(sellStop, true), sellStop)
+			addTransactions(book.BuysIter(buyStop, false), buyStop)
+			addTransactions(book.SellsIter(sellStop, false), sellStop)
+			book.Lock.RUnlock()
 		}
+		books.Lock.RUnlock()
 	}
 	return t
-}
-
-func (t *Transactions) Len() int {
-	t.lock.RLock()
-	l := t.Len()
-	t.lock.RUnlock()
-	return l
 }
 
 func UpdateTransactions(open, done *Transactions, msg coinbasepro.Message) {
@@ -153,7 +171,11 @@ func UpdateTransactions(open, done *Transactions, msg coinbasepro.Message) {
 			})
 	case "done":
 		// Update the old transaction
-		t, _ := open.Get(msg.ProductID, msg.OrderID)
+		t, exists := open.Get(msg.ProductID, msg.OrderID)
+		if !exists {
+			log.Println("Not on book", msg.OrderID)
+			return
+		}
 		t.ClosedAt = msg.Time.Time().UnixMicro()
 		t.Reason = msg.Reason
 		// Add it to done transactions
@@ -178,4 +200,89 @@ func UpdateTransactions(open, done *Transactions, msg coinbasepro.Message) {
 	}
 }
 
-// TODO write save transactions
+// SaveTransactions saves the open and done transactions. Also cleans the done transactions
+// This bypasses 'private' constraints and normally should not be done
+func SaveTransactions(db *gorm.DB, open, done *Transactions) {
+	assignmentCols := []string{"added_to_book", "remaining_size", "closed_at", "reason", "match_id", "order_changed", "new_size"}
+
+	toSlice := func(t *Transactions) []database.Transaction {
+		length := 0
+		for _, m := range t.transactions {
+			length += len(m)
+		}
+		slice := make([]database.Transaction, 0, length)
+		for _, m := range t.transactions {
+			for _, v := range m {
+				slice = append(slice, *v)
+			}
+		}
+		return slice
+	}
+
+	// Convert the transactions to a slice
+	open.lock.RLock()
+	done.lock.Lock()
+	openSlice := toSlice(open)
+	doneSlice := toSlice(done)
+
+	// Throw away done transactions since we don't need them anymore
+	for productId := range done.transactions {
+		done.transactions[productId] = make(map[string]*database.Transaction)
+	}
+	open.lock.RUnlock()
+	done.lock.Unlock()
+
+	// Save the transactions
+	db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "order_id"}},
+		DoUpdates: clause.AssignmentColumns(assignmentCols),
+	}).Create(&openSlice)
+	db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "order_id"}},
+		DoUpdates: clause.AssignmentColumns(assignmentCols),
+	}).Create(&doneSlice)
+}
+
+func TransactionsSaver(ctx context.Context, wg, trWg *sync.WaitGroup, open, done *Transactions) {
+	cli := ctx.Value(LucrumKey("conf")).(config.Configuration).CLI
+	db := ctx.Value(LucrumKey("db")).(*gorm.DB)
+
+	defer func() {
+		// Wait for all the l3 message handlers to finish in order to save
+		if cli.Verbose {
+			log.Println("Transaction saver waiting on L3 consumers to finish")
+		}
+		trWg.Wait()
+		if cli.Verbose {
+			log.Println("Saving transactions")
+		}
+		// Save the transactions one last time and exit
+		SaveTransactions(db, open, done)
+		if cli.Verbose {
+			log.Println("Saved transactions, now closing")
+		}
+		// Tell the parent we're done
+		wg.Done()
+	}()
+
+	if cli.Verbose {
+		log.Println("Started transaction saver")
+	}
+
+	// Every 10 seconds save the transactions
+	ticker := time.NewTicker(10 * time.Second)
+	for {
+		select {
+		case <-ticker.C:
+			if cli.Verbose {
+				log.Println("Saving transactions")
+			}
+			SaveTransactions(db, open, done)
+			if cli.Verbose {
+				log.Println("Saved transactions")
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
