@@ -213,9 +213,11 @@ func L3Handler(
 			if cli.Verbose {
 				log.Println("L3 message consumer finished")
 			}
-			trWg.Done()
-			// Tell order book we're done
+			// Tell order book and transactions we're done
 			obWg.Done()
+			if wsConf.StoreTransactions {
+				trWg.Done()
+			}
 			// Alert the parent we're done
 			wg.Done()
 		}
@@ -259,7 +261,7 @@ func L3Handler(
 					}
 
 					// Update the order book
-					lib.UpdateOrderBook(lib.Books.Get(msg.ProductID, true), msg)
+					lib.UpdateOrderBook(db, lib.Books.Get(msg.ProductID, true), msg)
 
 					// Update the transactions
 					if wsConf.StoreTransactions {

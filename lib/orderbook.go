@@ -316,7 +316,7 @@ func GetOrderBooks(
 
 // UpdateOrderBook handles interpreting messages from the full channel
 // and applying them to the internal order book
-func UpdateOrderBook(book *Book, msg coinbasepro.Message) {
+func UpdateOrderBook(db *gorm.DB, book *Book, msg coinbasepro.Message) {
 	// Have to lock to book since way too much needs to change
 	var once sync.Once
 	// Unlock the book at the end
@@ -378,15 +378,22 @@ func UpdateOrderBook(book *Book, msg coinbasepro.Message) {
 			ch = book.SellsWriteIter(stop, false)
 		}
 
-		// Remove the entry from the book if it exists
+		// Remove the entry from the book if it exists and save the last known sequence
 		for elem := range ch {
-			if elem.Value.(database.OrderBookSnapshot).OrderID == msg.OrderID {
+			v := elem.Value.(database.OrderBookSnapshot)
+			if v.OrderID == msg.OrderID {
 				// Remove the entry
 				if msg.Side == "buy" {
 					book.RemoveBuy(elem, false)
 				} else {
 					book.RemoveSell(elem, false)
 				}
+				// Update the entry in the db
+				db.Model(&v).Where(
+					"order_id = ?", v.OrderID,
+				).Update(
+					"last_sequence", book.GetSequence(false),
+				)
 				break
 			}
 		}
